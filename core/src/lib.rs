@@ -9,9 +9,10 @@ mod fmp4;
 mod media;
 mod mkv;
 mod server;
+mod subs;
 
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 uniffi::setup_scaffolding!();
 
@@ -40,6 +41,17 @@ pub struct AudioTrackInfo {
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
+pub struct SubtitleTrackInfo {
+    pub id: u64,
+    pub codec: String,
+    pub language: Option<String>,
+    pub name: Option<String>,
+    pub forced: bool,
+    /// Subtítulos de texto (SRT, ASS, WebVTT). Los de imagen (PGS, VobSub) aún no.
+    pub supported: bool,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
 pub struct MediaInfo {
     pub duration_seconds: f64,
     pub video_codec: String,
@@ -47,7 +59,7 @@ pub struct MediaInfo {
     pub height: u32,
     pub video_supported: bool,
     pub audio_tracks: Vec<AudioTrackInfo>,
-    pub subtitle_count: u32,
+    pub subtitle_tracks: Vec<SubtitleTrackInfo>,
 }
 
 /// Lee la cabecera de un MKV (rápido: no recorre el archivo).
@@ -76,8 +88,49 @@ pub fn probe(path: String) -> Result<MediaInfo, CoreError> {
                 supported: media::audio_supported(t),
             })
             .collect(),
-        subtitle_count: h.tracks.iter().filter(|t| t.kind == 17).count() as u32,
+        subtitle_tracks: h
+            .tracks
+            .iter()
+            .filter(|t| t.kind == mkv::TRACK_SUBTITLE)
+            .map(|t| SubtitleTrackInfo {
+                id: t.number,
+                codec: subs::friendly_codec(&t.codec_id),
+                language: t.language.clone().filter(|l| !l.is_empty() && l != "und"),
+                name: t.name.clone().filter(|n| !n.is_empty()),
+                forced: t.forced,
+                supported: media::subtitle_supported(t),
+            })
+            .collect(),
     })
+}
+
+/// Fragmento MP4 corto alrededor de `at_seconds` (sin audio elegido explícitamente),
+/// para que AVAssetImageGenerator saque una miniatura de un MKV.
+#[uniffi::export]
+pub fn thumbnail_clip(path: String, at_seconds: f64) -> Result<Vec<u8>, CoreError> {
+    media::Media::open(Path::new(&path), None)?.clip_at(at_seconds)
+}
+
+/// Recibe las líneas de diagnóstico del núcleo (peticiones HTTP, errores).
+/// En Swift se implementa con `Logger` para verlas en Consola / `log show`.
+#[uniffi::export(with_foreign)]
+pub trait LogSink: Send + Sync {
+    fn log(&self, line: String);
+}
+
+static LOG_SINK: RwLock<Option<Arc<dyn LogSink>>> = RwLock::new(None);
+
+/// Instala el receptor de registros (uno por proceso).
+#[uniffi::export]
+pub fn set_log_sink(sink: Arc<dyn LogSink>) {
+    *LOG_SINK.write().unwrap() = Some(sink);
+}
+
+pub(crate) fn emit(line: String) {
+    match LOG_SINK.read().unwrap().as_ref() {
+        Some(sink) => sink.log(line),
+        None => eprintln!("[reproductor] {line}"),
+    }
 }
 
 /// Servidor HLS en la red local. Crear uno al iniciar la app y reutilizarlo.

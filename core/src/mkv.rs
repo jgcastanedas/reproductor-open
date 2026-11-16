@@ -29,6 +29,7 @@ const ID_LANGUAGE_BCP47: u32 = 0x22_B59D;
 const ID_NAME: u32 = 0x536E;
 const ID_FLAG_DEFAULT: u32 = 0x88;
 const ID_FLAG_ENABLED: u32 = 0xB9;
+const ID_FLAG_FORCED: u32 = 0x55AA;
 const ID_VIDEO: u32 = 0xE0;
 const ID_PIXEL_WIDTH: u32 = 0xB0;
 const ID_PIXEL_HEIGHT: u32 = 0xBA;
@@ -50,6 +51,7 @@ const ID_SIMPLE_BLOCK: u32 = 0xA3;
 const ID_BLOCK_GROUP: u32 = 0xA0;
 const ID_BLOCK: u32 = 0xA1;
 const ID_REFERENCE_BLOCK: u32 = 0xFB;
+const ID_BLOCK_DURATION: u32 = 0x9B;
 const ID_CUES: u32 = 0x1C53_BB6B;
 const ID_CUE_POINT: u32 = 0xBB;
 const ID_CUE_TIME: u32 = 0xB3;
@@ -66,6 +68,7 @@ const LEVEL1_IDS: [u32; 8] = [
 
 pub const TRACK_VIDEO: u64 = 1;
 pub const TRACK_AUDIO: u64 = 2;
+pub const TRACK_SUBTITLE: u64 = 17;
 
 #[derive(Debug)]
 pub enum MkvError {
@@ -104,6 +107,7 @@ pub struct Track {
     pub language: Option<String>,
     pub name: Option<String>,
     pub is_default: bool,
+    pub forced: bool,
     pub enabled: bool,
     pub pixel_width: u32,
     pub pixel_height: u32,
@@ -114,6 +118,8 @@ pub struct Track {
     pub channels: u32,
     /// Bytes eliminados por "header stripping" (compresión algoritmo 3).
     pub header_strip: Option<Vec<u8>>,
+    /// Compresión zlib (algoritmo 0), habitual en subtítulos de mkvmerge antiguos.
+    pub zlib: bool,
     /// Compresión zlib/cifrado: no lo soportamos.
     pub unsupported_encoding: bool,
 }
@@ -427,6 +433,7 @@ fn parse_track_entry(r: &mut EbmlReader, end: u64) -> Result<Track> {
             ID_NAME => t.name = Some(r.string(size)?),
             ID_FLAG_DEFAULT => t.is_default = r.uint(size)? != 0,
             ID_FLAG_ENABLED => t.enabled = r.uint(size)? != 0,
+            ID_FLAG_FORCED => t.forced = r.uint(size)? != 0,
             ID_VIDEO => {
                 let vend = start + size;
                 while r.pos() < vend {
@@ -488,10 +495,10 @@ fn parse_content_encodings(r: &mut EbmlReader, end: u64, t: &mut Track) -> Resul
                             }
                             r.seek(zstart + zsize)?;
                         }
-                        if algo == 3 {
-                            t.header_strip = Some(settings);
-                        } else {
-                            t.unsupported_encoding = true;
+                        match algo {
+                            0 => t.zlib = true,
+                            3 => t.header_strip = Some(settings),
+                            _ => t.unsupported_encoding = true,
                         }
                     }
                     ID_CONTENT_ENCRYPTION => t.unsupported_encoding = true,
@@ -568,6 +575,8 @@ pub struct Block {
     pub keyframe: bool,
     /// Frames (con lacing ya separado). Vacío si no se pidieron datos.
     pub frames: Vec<Vec<u8>>,
+    /// BlockDuration (ticks), solo en BlockGroup. Lo usan los subtítulos.
+    pub duration: Option<i64>,
 }
 
 pub enum Event<'a> {
@@ -638,18 +647,21 @@ pub fn walk_clusters(
                     let gend = cstart + csize;
                     let mut block = None;
                     let mut has_ref = false;
+                    let mut duration = None;
                     while r.pos() < gend {
                         let Some((gid, gsize, gstart)) = r.header()? else { break };
                         let gsize = need_size(gsize, "hijo de BlockGroup")?;
                         match gid {
                             ID_BLOCK => block = read_block(r, h, gsize, cluster_ts, want_data, false)?,
                             ID_REFERENCE_BLOCK => has_ref = true,
+                            ID_BLOCK_DURATION => duration = Some(r.uint(gsize)? as i64),
                             _ => {}
                         }
                         r.seek(gstart + gsize)?;
                     }
                     if let Some(mut b) = block {
                         b.keyframe = !has_ref;
+                        b.duration = duration;
                         if cb(Event::Block(&b)) == Control::Stop {
                             return Ok(());
                         }
@@ -685,7 +697,7 @@ fn read_block(
 
     if !want_data(track) {
         r.seek(end)?;
-        return Ok(Some(Block { track, ts, keyframe, frames: vec![] }));
+        return Ok(Some(Block { track, ts, keyframe, frames: vec![], duration: None }));
     }
 
     let mut sizes: Vec<u64> = vec![];
@@ -741,9 +753,14 @@ fn read_block(
     }
 
     let strip = h.track(track).and_then(|t| t.header_strip.clone());
+    let zlib = h.track(track).is_some_and(|t| t.zlib);
     let mut frames = Vec::with_capacity(sizes.len());
     for s in &sizes {
-        let data = r.bytes(*s as usize)?;
+        let mut data = r.bytes(*s as usize)?;
+        if zlib {
+            data = miniz_oxide::inflate::decompress_to_vec_zlib(&data)
+                .map_err(|e| MkvError::Invalid(format!("datos zlib inválidos: {e:?}")))?;
+        }
         frames.push(match &strip {
             Some(prefix) if !prefix.is_empty() => {
                 let mut v = Vec::with_capacity(prefix.len() + data.len());
@@ -755,7 +772,7 @@ fn read_block(
         });
     }
     r.seek(end)?;
-    Ok(Some(Block { track, ts, keyframe, frames }))
+    Ok(Some(Block { track, ts, keyframe, frames, duration: None }))
 }
 
 /// Sin Cues: recorre todo el archivo leyendo solo cabeceras de bloque.

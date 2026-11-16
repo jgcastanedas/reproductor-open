@@ -15,7 +15,7 @@ fn main() {
     match probe(path.clone()) {
         Ok(info) => {
             println!("Video: {} {}x{} (compatible: {})", info.video_codec, info.width, info.height, info.video_supported);
-            println!("Duración: {:.1} s · subtítulos: {}", info.duration_seconds, info.subtitle_count);
+            println!("Duración: {:.1} s", info.duration_seconds);
             for a in &info.audio_tracks {
                 println!(
                     "  audio #{}: {} {}ch {} {}{}",
@@ -27,13 +27,23 @@ fn main() {
                     if a.supported { "" } else { "  (no compatible)" }
                 );
             }
+            for s in &info.subtitle_tracks {
+                println!(
+                    "  subtítulos #{}: {} {} {}{}{}",
+                    s.id,
+                    s.codec,
+                    s.language.clone().unwrap_or_default(),
+                    s.name.clone().unwrap_or_default(),
+                    if s.forced { " (forzados)" } else { "" },
+                    if s.supported { "" } else { "  (no compatible)" }
+                );
+            }
         }
         Err(e) => {
             eprintln!("error: {e}");
             std::process::exit(1);
         }
     }
-
     let server = StreamServer::new().expect("no se pudo iniciar el servidor");
     let t = std::time::Instant::now();
     match server.publish(path, audio) {

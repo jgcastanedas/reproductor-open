@@ -3,6 +3,8 @@
 use std::path::{Path, PathBuf};
 
 use crate::audio::{self, AudioKind};
+use crate::fmp4::AudioCodec;
+use crate::subs::{self, SubKind};
 use crate::fmp4::{self, Sample, TrackFragment, VideoCodec, VideoParams};
 use crate::mkv::{self, Control, Event, Keyframe, MkvHeader, Track};
 use crate::CoreError;
@@ -56,6 +58,25 @@ pub struct Media {
     reorder: i64,
     video_frame_ticks: Option<i64>,
     init: Vec<u8>,
+    subtitles: Vec<SubTrack>,
+    /// Atributos de la variante en la master playlist.
+    codecs: String,
+    bandwidth: u64,
+    resolution: (u32, u32),
+}
+
+/// Pista de subtítulos de texto que se publica como WebVTT.
+pub struct SubTrack {
+    pub number: u64,
+    kind: SubKind,
+    language: String,
+    name: String,
+    forced: bool,
+    default_duration: Option<i64>,
+}
+
+pub fn subtitle_supported(t: &Track) -> bool {
+    !t.unsupported_encoding && subs::kind_of(&t.codec_id).is_some()
 }
 
 impl Media {
@@ -160,6 +181,20 @@ impl Media {
         };
         let init = fmp4::init_segment(&vparams, audio.as_ref().map(|(_, p)| p));
 
+        let mut codecs = match &vparams.codec {
+            VideoCodec::Avc(c) => subs::avc_codec(c),
+            VideoCodec::Hevc(c) => subs::hevc_codec(c),
+        }
+        .unwrap_or_default();
+        if let Some((_, p)) = &audio {
+            codecs.push(',');
+            codecs.push_str(&match &p.codec {
+                AudioCodec::Aac(asc) => subs::aac_codec(asc),
+                AudioCodec::Ac3(_) => "ac-3".into(),
+                AudioCodec::Eac3(_) => "ec-3".into(),
+            });
+        }
+
         let scale = header.timestamp_scale as f64;
         let target = (TARGET_SEGMENT_SECS * 1e9 / scale) as i64;
         let last_kf = keyframes.last().map(|k| k.ts).unwrap_or(0);
@@ -171,6 +206,48 @@ impl Media {
         let segments = plan_segments(&keyframes, target, total_end);
         let video_frame_ticks = video.default_duration_ns.map(|d| (d as f64 / scale).round() as i64).filter(|&d| d > 0);
 
+        let mut used_names: Vec<String> = vec![];
+        let subtitles = header
+            .tracks
+            .iter()
+            .filter(|t| t.kind == mkv::TRACK_SUBTITLE && subtitle_supported(t))
+            .map(|t| {
+                let language = t
+                    .language
+                    .as_deref()
+                    .filter(|l| !l.is_empty() && *l != "und")
+                    .map(subs::lang_tag)
+                    .unwrap_or_else(|| "und".into());
+                let base = t
+                    .name
+                    .clone()
+                    .filter(|n| !n.trim().is_empty() && !n.to_lowercase().contains("www."))
+                    .or_else(|| subs::lang_name(&language).map(|n| n.to_string()))
+                    .unwrap_or_else(|| format!("Subtítulos {}", t.number));
+                let base = if t.forced && !base.to_lowercase().contains("forz") { format!("{base} (forzados)") } else { base };
+                // NAME debe ser único dentro del grupo.
+                let mut name = base.clone();
+                let mut i = 2;
+                while used_names.contains(&name) {
+                    name = format!("{base} {i}");
+                    i += 1;
+                }
+                used_names.push(name.clone());
+                SubTrack {
+                    number: t.number,
+                    kind: subs::kind_of(&t.codec_id).unwrap_or(SubKind::Srt),
+                    language,
+                    name,
+                    forced: t.forced,
+                    default_duration: t.default_duration_ns.map(|d| (d as f64 / scale).round() as i64),
+                }
+            })
+            .collect();
+
+        let duration_secs = (total_end as f64 * scale / 1e9).max(1.0);
+        let file_len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        let bandwidth = ((file_len as f64 * 8.0 / duration_secs) * 1.5) as u64;
+
         Ok(Media {
             path: path.to_path_buf(),
             header,
@@ -181,6 +258,10 @@ impl Media {
             reorder,
             video_frame_ticks,
             init,
+            subtitles,
+            codecs,
+            bandwidth: bandwidth.max(100_000),
+            resolution: (vparams.display_width, vparams.display_height),
         })
     }
 
@@ -192,11 +273,34 @@ impl Media {
         &self.init
     }
 
+    /// Lista principal: master playlist si hay subtítulos; si no, directamente la de video.
     pub fn playlist(&self) -> String {
-        let max = self.segments.iter().map(|s| self.secs(s.end - s.start)).fold(0.0, f64::max);
+        if self.subtitles.is_empty() {
+            return self.video_playlist();
+        }
+        let mut out = String::from("#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-INDEPENDENT-SEGMENTS\n");
+        for s in &self.subtitles {
+            out.push_str(&format!(
+                "#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs\",NAME=\"{}\",LANGUAGE=\"{}\",DEFAULT=NO,AUTOSELECT={},FORCED={},URI=\"subs/{}.m3u8\"\n",
+                s.name.replace('"', "'"),
+                s.language,
+                if s.forced || s.language != "und" { "YES" } else { "NO" },
+                if s.forced { "YES" } else { "NO" },
+                s.number
+            ));
+        }
+        let codecs = if self.codecs.is_empty() { String::new() } else { format!(",CODECS=\"{}\"", self.codecs) };
+        out.push_str(&format!(
+            "#EXT-X-STREAM-INF:BANDWIDTH={}{},RESOLUTION={}x{},SUBTITLES=\"subs\"\nvideo.m3u8\n",
+            self.bandwidth, codecs, self.resolution.0, self.resolution.1
+        ));
+        out
+    }
+
+    pub fn video_playlist(&self) -> String {
         let mut out = String::new();
         out.push_str("#EXTM3U\n#EXT-X-VERSION:7\n");
-        out.push_str(&format!("#EXT-X-TARGETDURATION:{}\n", max.ceil().max(1.0) as u64));
+        out.push_str(&format!("#EXT-X-TARGETDURATION:{}\n", self.target_duration()));
         out.push_str("#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-INDEPENDENT-SEGMENTS\n#EXT-X-MEDIA-SEQUENCE:0\n");
         out.push_str("#EXT-X-MAP:URI=\"init.mp4\"\n");
         for (i, s) in self.segments.iter().enumerate() {
@@ -204,6 +308,91 @@ impl Media {
         }
         out.push_str("#EXT-X-ENDLIST\n");
         out
+    }
+
+    fn target_duration(&self) -> u64 {
+        let max = self.segments.iter().map(|s| self.secs(s.end - s.start)).fold(0.0, f64::max);
+        max.ceil().max(1.0) as u64
+    }
+
+    pub fn subtitle_playlist(&self, track: u64) -> Option<String> {
+        self.subtitles.iter().find(|s| s.number == track)?;
+        let mut out = String::from("#EXTM3U\n#EXT-X-VERSION:7\n");
+        out.push_str(&format!("#EXT-X-TARGETDURATION:{}\n", self.target_duration()));
+        out.push_str("#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-MEDIA-SEQUENCE:0\n");
+        for (i, s) in self.segments.iter().enumerate() {
+            out.push_str(&format!("#EXTINF:{:.5},\n{}/seg{}.vtt\n", self.secs(s.end - s.start), track, i));
+        }
+        out.push_str("#EXT-X-ENDLIST\n");
+        Some(out)
+    }
+
+    /// Segmento WebVTT `n` de la pista `track`: los cues que se solapan con el segmento.
+    pub fn subtitle_segment(&self, track: u64, n: usize) -> Result<String, CoreError> {
+        let sub = self
+            .subtitles
+            .iter()
+            .find(|s| s.number == track)
+            .ok_or_else(|| CoreError::InvalidFile { detail: format!("no hay subtítulos en la pista {track}") })?;
+        let seg = self
+            .segments
+            .get(n)
+            .ok_or_else(|| CoreError::InvalidFile { detail: format!("segmento {n} fuera de rango") })?
+            .clone();
+        let (_, mut r) = mkv::read_header(&self.path)?;
+        let fallback = sub.default_duration.filter(|&d| d > 0).unwrap_or((3.0 * 1e9 / self.header.timestamp_scale as f64) as i64);
+        let mut cues: Vec<(i64, i64, String)> = vec![];
+        mkv::walk_clusters(&mut r, &self.header, self.read_start(&seg), &|t| t == track, &mut |ev| {
+            match ev {
+                Event::Cluster { ts, .. } if ts > seg.end => return Control::Stop,
+                Event::Block(b) if b.track == track => {
+                    let end = b.ts + b.duration.filter(|&d| d > 0).unwrap_or(fallback);
+                    if end > seg.start && b.ts < seg.end {
+                        for f in &b.frames {
+                            if let Some(text) = subs::to_vtt_text(sub.kind, f) {
+                                cues.push((b.ts, end, text));
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+            Control::Continue
+        })?;
+        cues.sort_by_key(|c| c.0);
+        let mut out = String::from("WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:0,LOCAL:00:00:00.000\n\n");
+        for (start, end, text) in cues {
+            // Misma línea de tiempo que el video (presentación desplazada +reorder).
+            out.push_str(&format!(
+                "{} --> {}\n{}\n\n",
+                subs::vtt_time(self.secs(start + self.reorder)),
+                subs::vtt_time(self.secs(end + self.reorder)),
+                text
+            ));
+        }
+        Ok(out)
+    }
+
+    /// MP4 autocontenido (init + el segmento que contiene `at_seconds`) para generar miniaturas.
+    pub fn clip_at(&self, at_seconds: f64) -> Result<Vec<u8>, CoreError> {
+        let n = self
+            .segments
+            .iter()
+            .position(|s| self.secs(s.end) > at_seconds)
+            .unwrap_or(0);
+        let mut out = self.init.clone();
+        out.extend(self.segment(n)?);
+        Ok(out)
+    }
+
+    /// Cluster desde el que leer un segmento (el del keyframe anterior, para no perder
+    /// audio o subtítulos que empiezan un poco antes del keyframe).
+    fn read_start(&self, seg: &Segment) -> u64 {
+        if seg.first_kf > 0 {
+            self.keyframes[seg.first_kf - 1].cluster_pos
+        } else {
+            self.keyframes[0].cluster_pos
+        }
     }
 
     fn to_90k(&self, ticks: i64) -> i64 {
@@ -222,11 +411,7 @@ impl Media {
             .get(n)
             .ok_or_else(|| CoreError::InvalidFile { detail: format!("segmento {n} fuera de rango") })?
             .clone();
-        let start_pos = if seg.first_kf > 0 {
-            self.keyframes[seg.first_kf - 1].cluster_pos
-        } else {
-            self.keyframes[0].cluster_pos
-        };
+        let start_pos = self.read_start(&seg);
         let (_, mut r) = mkv::read_header(&self.path)?;
 
         let video_num = self.video_track;

@@ -24,6 +24,7 @@ uniffi = "0.32"
 thiserror = "2"
 tiny_http = "0.12"
 if-addrs = "0.13"
+miniz_oxide = "0.8"
 
 [features]
 # Herramienta de generación de bindings (clap, askama, goblin…): fuera de la librería de la app.

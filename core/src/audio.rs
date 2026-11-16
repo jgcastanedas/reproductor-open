@@ -192,13 +192,26 @@ struct Eac3Header {
     samples_per_frame: u32,
 }
 
-fn parse_eac3(f: &[u8]) -> Option<Eac3Header> {
+/// Cabecera de un syncframe E-AC-3 (lo necesario para la caja dec3).
+struct Eac3Sync {
+    strmtyp: u32,
+    bytes: usize,
+    fscod: u32,
+    sample_rate: u32,
+    numblks: u32,
+    acmod: u32,
+    lfeon: u32,
+    bsid: u32,
+    chanmap: Option<u32>,
+}
+
+fn parse_eac3_sync(f: &[u8]) -> Option<Eac3Sync> {
     if f.len() < 6 || f[0] != 0x0B || f[1] != 0x77 {
         return None;
     }
     let mut br = BitReader::new(&f[2..]);
-    let _strmtyp = br.bits(2)?;
-    let _substreamid = br.bits(3)?;
+    let strmtyp = br.bits(2)?;
+    br.bits(3)?; // substreamid
     let frmsiz = br.bits(11)?;
     let fscod = br.bits(2)?;
     let (sample_rate, numblks) = if fscod == 3 {
@@ -211,24 +224,89 @@ fn parse_eac3(f: &[u8]) -> Option<Eac3Header> {
     let acmod = br.bits(3)?;
     let lfeon = br.bits(1)?;
     let bsid = br.bits(5)?;
-    let samples = numblks * 256;
-    let bytes = (frmsiz + 1) * 2;
-    let data_rate = (bytes as u64 * 8 * sample_rate as u64 / samples as u64 / 1000) as u32;
+    // dialnorm, compr y (si acmod == 0) su par para el segundo canal mono.
+    br.bits(5)?;
+    if br.bits(1)? == 1 {
+        br.bits(8)?;
+    }
+    if acmod == 0 {
+        br.bits(5)?;
+        if br.bits(1)? == 1 {
+            br.bits(8)?;
+        }
+    }
+    let chanmap = if strmtyp == 1 && br.bits(1)? == 1 { Some(br.bits(16)?) } else { None };
+    Some(Eac3Sync {
+        strmtyp,
+        bytes: (frmsiz as usize + 1) * 2,
+        fscod,
+        sample_rate,
+        numblks,
+        acmod,
+        lfeon,
+        bsid,
+        chanmap,
+    })
+}
+
+/// chan_loc (9 bits) de la caja dec3 a partir del chanmap de un substream dependiente.
+/// chanmap (bit 0 = MSB): 5 Lc/Rc, 6 Lrs/Rrs, 7 Cs, 8 Ts, 9 Lsd/Rsd, 10 Lw/Rw,
+/// 11 Lvh/Rvh, 12 Cvh, 14 LFE2. chan_loc usa ese mismo orden sin Lts/Rts (bit 13).
+fn chan_loc_from_chanmap(chanmap: u32) -> u32 {
+    let bit = |i: u32| (chanmap >> (15 - i)) & 1;
+    let mut loc = 0;
+    for (k, i) in (5..=12).enumerate() {
+        loc |= bit(i) << (8 - k as u32);
+    }
+    loc | bit(14)
+}
+
+fn parse_eac3(f: &[u8]) -> Option<Eac3Header> {
+    let first = parse_eac3_sync(f)?;
+    // Un frame de Matroska puede contener el substream independiente seguido
+    // de substreams dependientes (p. ej. 7.1 = 5.1 + 2 canales traseros).
+    let mut num_dep_sub = 0u32;
+    let mut chan_loc = 0u32;
+    let mut total_bytes = first.bytes;
+    let mut off = first.bytes;
+    while off < f.len() {
+        let Some(s) = parse_eac3_sync(&f[off..]) else { break };
+        // Solo los dependientes (strmtyp 1); otro independiente sería otro programa.
+        if s.strmtyp != 1 {
+            break;
+        }
+        num_dep_sub += 1;
+        chan_loc |= match s.chanmap {
+            Some(m) => chan_loc_from_chanmap(m),
+            // Sin chanmap, un dependiente estéreo suele ser el par trasero Lrs/Rrs.
+            None if s.acmod == 2 => 1 << 7,
+            None => 0,
+        };
+        total_bytes += s.bytes;
+        off += s.bytes;
+    }
+
+    let samples = first.numblks * 256;
+    let data_rate = (total_bytes as u64 * 8 * first.sample_rate as u64 / samples as u64 / 1000) as u32;
 
     let mut w = BitWriter::new();
     w.put(13, data_rate);
     w.put(3, 0); // num_ind_sub - 1
-    w.put(2, fscod);
-    w.put(5, bsid);
+    w.put(2, first.fscod);
+    w.put(5, first.bsid);
     w.put(1, 0); // reserved
     w.put(1, 0); // asvc
     w.put(3, 0); // bsmod
-    w.put(3, acmod);
-    w.put(1, lfeon);
+    w.put(3, first.acmod);
+    w.put(1, first.lfeon);
     w.put(3, 0); // reserved
-    w.put(4, 0); // num_dep_sub
-    w.put(1, 0); // reserved
-    Some(Eac3Header { dec3: w.out, sample_rate, samples_per_frame: samples })
+    w.put(4, num_dep_sub.min(15));
+    if num_dep_sub > 0 {
+        w.put(9, chan_loc);
+    } else {
+        w.put(1, 0); // reserved
+    }
+    Some(Eac3Header { dec3: w.out, sample_rate: first.sample_rate, samples_per_frame: samples })
 }
 
 #[cfg(test)]
@@ -247,5 +325,64 @@ mod tests {
         let frame = [0x0B, 0x77, 0, 0, 0b0001_1100, 0b0100_0111, 0b1000_0000, 0, 0, 0];
         let h = parse_ac3(&frame).unwrap();
         assert_eq!(h.sample_rate, 48000);
+    }
+
+    /// Syncframe E-AC-3 mínimo de `bytes` bytes.
+    fn eac3_frame(strmtyp: u32, acmod: u32, lfeon: u32, chanmap: Option<u32>, bytes: usize) -> Vec<u8> {
+        let mut w = BitWriter::new();
+        w.put(16, 0x0B77);
+        w.put(2, strmtyp);
+        w.put(3, 0); // substreamid
+        w.put(11, (bytes / 2 - 1) as u32);
+        w.put(2, 0); // fscod 48 kHz
+        w.put(2, 3); // 6 bloques
+        w.put(3, acmod);
+        w.put(1, lfeon);
+        w.put(5, 16); // bsid
+        w.put(5, 31); // dialnorm
+        w.put(1, 0); // compre
+        if strmtyp == 1 {
+            match chanmap {
+                Some(m) => {
+                    w.put(1, 1);
+                    w.put(16, m);
+                }
+                None => w.put(1, 0),
+            }
+        }
+        let mut v = w.out;
+        v.resize(bytes, 0);
+        v
+    }
+
+    #[test]
+    fn eac3_5_1() {
+        let h = parse_eac3(&eac3_frame(0, 7, 1, None, 768)).unwrap();
+        assert_eq!(h.samples_per_frame, 1536);
+        assert_eq!(h.dec3.len(), 5);
+        // num_dep_sub = 0
+        assert_eq!((h.dec3[4] >> 1) & 0x0F, 0);
+    }
+
+    #[test]
+    fn eac3_7_1_con_dependiente() {
+        // Independiente 5.1 + dependiente con Lrs/Rrs (bit 6 del chanmap).
+        let mut f = eac3_frame(0, 7, 1, None, 768);
+        f.extend(eac3_frame(1, 2, 0, Some(1 << (15 - 6)), 256));
+        let h = parse_eac3(&f).unwrap();
+        assert_eq!(h.dec3.len(), 6);
+        let mut br = BitReader::new(&h.dec3);
+        let data_rate = br.bits(13).unwrap();
+        assert_eq!(data_rate, (1024 * 8 * 48000 / 1536 / 1000) as u32);
+        br.bits(3 + 2 + 5 + 1 + 1 + 3 + 3 + 1 + 3).unwrap();
+        assert_eq!(br.bits(4), Some(1)); // un substream dependiente
+        assert_eq!(br.bits(9), Some(1 << 7)); // Lrs/Rrs
+    }
+
+    #[test]
+    fn chan_loc_mapping() {
+        assert_eq!(chan_loc_from_chanmap(1 << (15 - 5)), 1 << 8); // Lc/Rc
+        assert_eq!(chan_loc_from_chanmap(1 << (15 - 14)), 1); // LFE2
+        assert_eq!(chan_loc_from_chanmap(1 << (15 - 13)), 0); // Lts/Rts no existe en dec3
     }
 }

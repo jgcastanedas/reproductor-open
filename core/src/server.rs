@@ -136,8 +136,20 @@ fn handle(req: Request, sessions: &Sessions) {
         return respond_status(req, 404);
     };
 
+    const M3U8: &str = "application/vnd.apple.mpegurl";
     let result: Result<(Vec<u8>, &str), CoreError> = if file == "index.m3u8" {
-        Ok((media.playlist().into_bytes(), "application/vnd.apple.mpegurl"))
+        Ok((media.playlist().into_bytes(), M3U8))
+    } else if file == "video.m3u8" {
+        Ok((media.video_playlist().into_bytes(), M3U8))
+    } else if let Some(rest) = file.strip_prefix("subs/") {
+        match subtitle_route(rest) {
+            Some(SubRoute::Playlist(t)) => match media.subtitle_playlist(t) {
+                Some(p) => Ok((p.into_bytes(), M3U8)),
+                None => return respond_status(req, 404),
+            },
+            Some(SubRoute::Segment(t, n)) => media.subtitle_segment(t, n).map(|v| (v.into_bytes(), "text/vtt; charset=utf-8")),
+            None => return respond_status(req, 404),
+        }
     } else if file == "init.mp4" {
         Ok((media.init_segment().to_vec(), "video/mp4"))
     } else if let Some(n) = file.strip_prefix("seg").and_then(|s| s.strip_suffix(".m4s")).and_then(|s| s.parse().ok()) {
@@ -149,13 +161,54 @@ fn handle(req: Request, sessions: &Sessions) {
     match result {
         Ok((body, ctype)) => respond_bytes(req, body, ctype),
         Err(e) => {
-            eprintln!("[reproductor] error sirviendo {url}: {e}");
+            crate::emit(format!("error sirviendo {}: {e}", redact(&url)));
             respond_status(req, 500)
         }
     }
 }
 
+enum SubRoute {
+    Playlist(u64),
+    Segment(u64, usize),
+}
+
+/// "3.m3u8" → lista de la pista 3; "3/seg12.vtt" → segmento 12 de la pista 3.
+fn subtitle_route(rest: &str) -> Option<SubRoute> {
+    if let Some(t) = rest.strip_suffix(".m3u8") {
+        return t.parse().ok().map(SubRoute::Playlist);
+    }
+    let (t, seg) = rest.split_once('/')?;
+    let n = seg.strip_prefix("seg")?.strip_suffix(".vtt")?.parse().ok()?;
+    Some(SubRoute::Segment(t.parse().ok()?, n))
+}
+
+/// Ruta sin el token (para no dejarlo en los registros).
+fn redact(url: &str) -> String {
+    match url.trim_start_matches('/').split_once('/') {
+        Some((_, rest)) => format!("/…/{rest}"),
+        None => url.to_string(),
+    }
+}
+
+fn log_request(req: &Request, status: u16, bytes: usize) {
+    let range = req
+        .headers()
+        .iter()
+        .find(|h| h.field.equiv("Range"))
+        .map(|h| format!(" range={}", h.value))
+        .unwrap_or_default();
+    let agent = req
+        .headers()
+        .iter()
+        .find(|h| h.field.equiv("User-Agent"))
+        .map(|h| format!(" ua=\"{}\"", h.value))
+        .unwrap_or_default();
+    let from = req.remote_addr().map(|a| a.to_string()).unwrap_or_else(|| "?".into());
+    crate::emit(format!("{} {} → {status} ({bytes} B) desde {from}{range}{agent}", req.method(), redact(req.url())));
+}
+
 fn respond_status(req: Request, code: u16) {
+    log_request(&req, code, 0);
     let _ = req.respond(Response::empty(StatusCode(code)));
 }
 
@@ -173,6 +226,7 @@ fn respond_bytes(req: Request, body: Vec<u8>, ctype: &str) {
             .with_header(header("Cache-Control", "no-cache"))
             .with_header(header("Access-Control-Allow-Origin", "*"))
     };
+    log_request(&req, if range.is_some() { 206 } else { 200 }, range.map(|(a, b)| b - a + 1).unwrap_or(total));
     let resp = match range {
         Some((a, b)) => {
             let slice = if is_head { vec![] } else { body[a..=b].to_vec() };
