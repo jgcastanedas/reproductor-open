@@ -74,6 +74,7 @@ Por eso la app tiene un **modo compatible**:
 
 - **Audio:** el Dolby Digital (AC-3 / E-AC-3) se convierte **a AAC estéreo** mientras se envía la película. Cada segmento se convierte por separado con AudioToolbox, alineado a una rejilla global de 1024 muestras para que encajen sin cortes.
 - **Lista de reproducción:** se publica la del video directamente, sin la lista de subtítulos.
+- **Piezas pequeñas:** la película se sirve en piezas de 2 segundos como máximo. Un Roku Express fallaba con segmentos de 9 MB (error `-12862`) y reiniciaba en bucle; con piezas de unos 2,5 MB la reproducción es continua. Cada pieza se corta en orden de decodificación y, al retomar, la app arranca en un keyframe.
 - **Activación automática:** si una tele rechaza el video por AirPlay, la app activa el modo y retoma en el mismo segundo. También se puede activar a mano en el menú **«Tele»**.
 - **Limitación:** en este modo **no hay subtítulos** en la tele. En el Mac y con Apple TV se conservan el sonido 5.1 original y los subtítulos.
 
