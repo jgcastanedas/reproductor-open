@@ -1,0 +1,29 @@
+[package]
+name = "reproductor_core"
+version = "0.1.0"
+edition = "2021"
+description = "Núcleo del reproductor: lee MKV/MP4, remuxea a HLS fMP4 sin recodificar y lo sirve por HTTP en la red local para AirPlay."
+
+[lib]
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+
+[[bin]]
+name = "reproductor-cli"
+path = "src/bin/cli.rs"
+
+[dependencies]
+uniffi = { version = "0.32", features = ["cli"] }
+thiserror = "2"
+tiny_http = "0.12"
+if-addrs = "0.13"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+# Xcode hace el strip al empaquetar la app (rust-objcopy falla en algunos toolchains).
+strip = "none"

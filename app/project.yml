@@ -1,0 +1,89 @@
+name: ReproductorAirPlay
+options:
+  bundleIdPrefix: app.ainoa
+  deploymentTarget:
+    iOS: "17.0"
+    macOS: "14.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    PRODUCT_NAME: Reproductor
+    DEVELOPMENT_TEAM: ""
+    # La librería Rust es solo arm64 (Apple Silicon y iPhone).
+    ARCHS: arm64
+    EXCLUDED_ARCHS[sdk=iphonesimulator*]: x86_64
+
+targetTemplates:
+  App:
+    type: application
+    sources:
+      - path: Shared
+      - path: Generated/ReproductorCore.swift
+    dependencies:
+      - framework: ReproductorCore.xcframework
+        embed: false
+
+targets:
+  Reproductor-iOS:
+    templates: [App]
+    platform: iOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.ainoa.reproductor
+        TARGETED_DEVICE_FAMILY: "1,2"
+    info:
+      path: Support/Info-iOS.plist
+      properties:
+        CFBundleDisplayName: Reproductor
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        UISupportedInterfaceOrientations~ipad: [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        UIBackgroundModes: [audio]
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        NSLocalNetworkUsageDescription: El Apple TV descarga el video desde este dispositivo a través de tu red local.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+          NSAllowsArbitraryLoadsForMedia: true
+        UTImportedTypeDeclarations: &mkvType
+          - UTTypeIdentifier: org.matroska.mkv
+            UTTypeDescription: Video Matroska
+            UTTypeConformsTo: [public.movie]
+            UTTypeTagSpecification:
+              public.filename-extension: [mkv]
+              public.mime-type: [video/x-matroska]
+        CFBundleDocumentTypes: &docTypes
+          - CFBundleTypeName: Video
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes: [public.mpeg-4, com.apple.quicktime-movie, public.movie, org.matroska.mkv]
+
+  Reproductor-macOS:
+    templates: [App]
+    platform: macOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.ainoa.reproductor.mac
+        CODE_SIGN_IDENTITY: "-"
+        ENABLE_HARDENED_RUNTIME: YES
+    entitlements:
+      path: Support/Reproductor-macOS.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.network.server: true
+        com.apple.security.network.client: true
+        com.apple.security.files.user-selected.read-only: true
+    info:
+      path: Support/Info-macOS.plist
+      properties:
+        CFBundleDisplayName: Reproductor
+        LSApplicationCategoryType: public.app-category.entertainment
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+          NSAllowsArbitraryLoadsForMedia: true
+        UTImportedTypeDeclarations: *mkvType
+        CFBundleDocumentTypes: *docTypes

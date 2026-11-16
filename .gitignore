@@ -1,0 +1,7 @@
+core/target/
+app/build/
+app/Generated/
+app/ReproductorCore.xcframework/
+app/ReproductorAirPlay.xcodeproj/
+.DS_Store
+xcuserdata/
