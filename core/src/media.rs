@@ -91,9 +91,12 @@ pub struct Media {
     video_frame_ticks: Option<i64>,
     init: Vec<u8>,
     subtitles: Vec<SubTrack>,
-    /// Cadena RFC 6381 (se conserva para diagnóstico; no se publica en la master playlist).
-    #[allow(dead_code)]
+    /// Cadena RFC 6381 para el atributo CODECS de la master playlist.
     codecs: String,
+    /// VIDEO-RANGE (SDR, PQ o HLG) y fotogramas por segundo, que AVPlayer exige en la
+    /// master playlist para aceptar video HDR.
+    video_range: &'static str,
+    frame_rate: Option<f64>,
     bandwidth: u64,
     resolution: (u32, u32),
 }
@@ -239,6 +242,11 @@ impl Media {
         };
         let init = fmp4::init_segment(&vparams, audio.as_ref().map(|(_, p)| p));
 
+        let video_range = match &vparams.codec {
+            VideoCodec::Hevc(c) => crate::video::hevc_video_range(c),
+            VideoCodec::Avc(_) => "SDR",
+        };
+        let frame_rate = video.default_duration_ns.filter(|&d| d > 0).map(|d| 1e9 / d as f64);
         let mut codecs = match &vparams.codec {
             VideoCodec::Avc(c) => subs::avc_codec(c),
             VideoCodec::Hevc(c) => subs::hevc_codec(c),
@@ -321,6 +329,8 @@ impl Media {
             init,
             subtitles,
             codecs,
+            video_range,
+            frame_rate,
             bandwidth: bandwidth.max(100_000),
             resolution: (vparams.display_width, vparams.display_height),
         })
@@ -354,12 +364,22 @@ impl Media {
                 s.number
             ));
         }
-        // Sin CODECS: los receptores AirPlay de otras marcas (Roku, Samsung…) descartan la
-        // variante si creen no poder decodificar el audio (p. ej. "ac-3" en un Roku Express),
-        // aunque luego lo envíen tal cual a la tele. Sin el atributo, prueban a reproducirla.
+        // CODECS es imprescindible con HEVC: sin él, AVPlayer da por hecho H.264 y falla
+        // (-12927). En modo compatible el audio ya es AAC, así que las teles de otras marcas
+        // (que descartan la variante si ven "ac-3") también la aceptan.
+        // Con video HDR (PQ/HLG), AVPlayer además exige VIDEO-RANGE y FRAME-RATE: sin ellos
+        // configura el decodificador para SDR y también falla con -12927.
+        let mut attrs = String::new();
+        if !self.codecs.is_empty() {
+            attrs.push_str(&format!(",CODECS=\"{}\"", self.codecs));
+        }
+        attrs.push_str(&format!(",VIDEO-RANGE={}", self.video_range));
+        if let Some(fps) = self.frame_rate {
+            attrs.push_str(&format!(",FRAME-RATE={fps:.3}"));
+        }
         out.push_str(&format!(
-            "#EXT-X-STREAM-INF:BANDWIDTH={},RESOLUTION={}x{},SUBTITLES=\"subs\"\nvideo.m3u8\n",
-            self.bandwidth, self.resolution.0, self.resolution.1
+            "#EXT-X-STREAM-INF:BANDWIDTH={},RESOLUTION={}x{}{},SUBTITLES=\"subs\"\nvideo.m3u8\n",
+            self.bandwidth, self.resolution.0, self.resolution.1, attrs
         ));
         out
     }

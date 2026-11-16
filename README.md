@@ -303,6 +303,7 @@ reproductor-open/
 - [ ] Subtítulos de imagen (PGS, VobSub).
 - [x] AirPlay con teles de otras marcas (Roku, Samsung, LG): modo compatible con audio AAC.
 - [x] Subtítulos en el modo compatible, con vuelta atrás automática si la tele no los acepta.
+- [x] Video HDR (HDR10/PQ, HLG, Dolby Vision 8.1): el rango se lee del SPS de HEVC y se declara en la lista principal con `VIDEO-RANGE` y `FRAME-RATE`, que AVPlayer exige (sin ellos falla con `-12927`).
 
 ¿Ideas o errores? Abre un *issue*. Las contribuciones son bienvenidas.
 

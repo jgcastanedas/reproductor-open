@@ -10,6 +10,7 @@ mod media;
 mod mkv;
 mod server;
 mod subs;
+mod video;
 
 use std::path::Path;
 use std::sync::{Arc, RwLock};
