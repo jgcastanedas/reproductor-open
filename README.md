@@ -223,3 +223,7 @@ reproductor-open/
 - [ ] Biblioteca con miniaturas y «seguir viendo».
 
 ¿Ideas o errores? Abre un *issue*. Las contribuciones son bienvenidas.
+
+## Licencia
+
+Código abierto bajo la [licencia MIT](LICENSE): puedes usarlo, modificarlo y distribuirlo libremente, también en proyectos comerciales, siempre que mantengas el aviso de copyright.

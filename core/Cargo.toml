@@ -2,6 +2,8 @@
 name = "reproductor_core"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+repository = "https://github.com/jgcastanedas/reproductor-open"
 description = "Núcleo del reproductor: lee MKV/MP4, remuxea a HLS fMP4 sin recodificar y lo sirve por HTTP en la red local para AirPlay."
 
 [lib]
