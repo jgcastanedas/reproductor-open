@@ -57,8 +57,11 @@ final class PlayerModel: ObservableObject {
     }
 
     private func currentPosition() -> CMTime? {
-        if let t = player?.currentTime(), t.isValid, t.seconds > 1 { return t }
-        return lastPosition
+        if player?.currentItem?.status == .readyToPlay, let t = player?.currentTime(), t.isValid, t.seconds > 1 {
+            return t
+        }
+        if let lastPosition { return lastPosition }
+        return currentItemID.flatMap { library.item($0)?.resumePosition }.map { CMTime(seconds: $0, preferredTimescale: 600) }
     }
 
     private func showNotice(_ text: String) {
@@ -277,9 +280,14 @@ final class PlayerModel: ObservableObject {
     }
 
     private func saveProgress() {
-        guard let id = currentItemID, let player, let item = player.currentItem else { return }
+        // Solo un video que se está reproduciendo bien: un ítem que falló (p. ej. un intento
+        // de AirPlay rechazado) informa 0 s y borraría el punto de «seguir viendo».
+        guard let id = currentItemID, let player, let item = player.currentItem,
+              item.status == .readyToPlay else { return }
+        let time = player.currentTime()
+        guard time.isValid, time.seconds > 1 else { return }
         let duration = info?.durationSeconds ?? item.duration.seconds
-        library.updateProgress(id, position: player.currentTime().seconds, duration: duration)
+        library.updateProgress(id, position: time.seconds, duration: duration)
     }
 
     private func teardownObservers() {

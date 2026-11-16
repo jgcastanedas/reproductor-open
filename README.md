@@ -60,6 +60,27 @@ AirPlay es la forma natural de ver en la tele un video que tienes en el iPhone o
 
 ---
 
+## Teles con AirPlay de otras marcas (Roku, Samsung, LG…)
+
+Muchas teles y reproductores que no son de Apple traen AirPlay, pero aceptan menos cosas que un Apple TV. Lo comprobamos con un Roku Express leyendo los registros de AirPlay del Mac:
+
+| Prueba | Qué hizo el Roku |
+|---|---|
+| Lista principal con subtítulos | La leyó y la rechazó (error `-60034`) sin pedir el video. |
+| Lista de video con audio Dolby Digital | Descargó el segmento y no lo pudo decodificar (error `-12927`). |
+| Lista de video solo con imagen | Se vio perfecto. |
+
+Por eso la app tiene un **modo compatible**:
+
+- **Audio:** el Dolby Digital (AC-3 / E-AC-3) se convierte **a AAC estéreo** mientras se envía la película. Cada segmento se convierte por separado con AudioToolbox, alineado a una rejilla global de 1024 muestras para que encajen sin cortes.
+- **Lista de reproducción:** se publica la del video directamente, sin la lista de subtítulos.
+- **Activación automática:** si una tele rechaza el video por AirPlay, la app activa el modo y retoma en el mismo segundo. También se puede activar a mano en el menú **«Tele»**.
+- **Limitación:** en este modo **no hay subtítulos** en la tele. En el Mac y con Apple TV se conservan el sonido 5.1 original y los subtítulos.
+
+> En macOS, usa el botón de AirPlay **de los controles del reproductor**. Un selector de AirPlay genérico solo envía el audio de la app a las teles de otras marcas.
+
+---
+
 ## Arquitectura y detalles técnicos
 
 El proyecto tiene dos capas: un **núcleo en Rust** que hace el trabajo pesado y una **app SwiftUI** que aporta la interfaz y AirPlay.
@@ -77,6 +98,7 @@ El proyecto tiene dos capas: un **núcleo en Rust** que hace el trabajo pesado y
 | `mkv.rs` | Demuxer Matroska/EBML escrito desde cero. |
 | `fmp4.rs` | Muxer de MP4 fragmentado (CMAF) para HLS. |
 | `audio.rs` | Configuración de los códecs de audio (AAC, AC-3, E-AC-3). |
+| `subs.rs` | Subtítulos de texto → WebVTT, idiomas y cadenas de códecs. |
 | `media.rs` | Plan de segmentos, reconstrucción de tiempos y generación de cada segmento. |
 | `server.rs` | Servidor HTTP en la red local. |
 | `lib.rs` | API pública expuesta a Swift (`probe`, `StreamServer`). |
@@ -278,7 +300,8 @@ reproductor-open/
 - [x] Biblioteca con miniaturas y «seguir viendo».
 - [ ] Recodificar al vuelo el audio DTS y TrueHD a AAC o AC-3. Requiere un decodificador de DTS/TrueHD, y hoy no hay ninguno maduro en Rust puro.
 - [ ] Subtítulos de imagen (PGS, VobSub).
-- [ ] Probar y documentar AirPlay con televisores de otras marcas (Roku, Samsung, LG).
+- [x] AirPlay con teles de otras marcas (Roku, Samsung, LG): modo compatible con audio AAC.
+- [ ] Subtítulos en el modo compatible (declararlos de una forma que esas teles acepten).
 
 ¿Ideas o errores? Abre un *issue*. Las contribuciones son bienvenidas.
 
