@@ -135,7 +135,18 @@ Si el MKV tiene varias pistas de audio (por ejemplo, doblaje y versión original
 ### App SwiftUI (`app/`)
 
 - Un mismo código para **iOS y macOS** (`app/Shared`), con dos targets generados por **XcodeGen** (`project.yml`).
-- `VideoPlayer` de AVKit para los controles nativos y `AVRoutePickerView` para el botón de AirPlay en ambas plataformas. En macOS se le asigna el `player` para que muestre los destinos de video.
+- **macOS (la plataforma principal):**
+  - Ventana con **barra lateral de biblioteca**: miniaturas, barra de progreso y secciones «Seguir viendo» y «Biblioteca».
+  - Retoma cada video donde lo dejaste. Los archivos se recuerdan con *security-scoped bookmarks*, así que siguen accesibles dentro del sandbox entre sesiones.
+  - Reproductor nativo `AVPlayerView`: controles flotantes, pantalla completa, imagen dentro de imagen, atajos de teclado y **botón de AirPlay de video** integrado.
+  - Menús de **audio** y **subtítulos** en la barra de herramientas.
+- **iOS:** `VideoPlayer` de AVKit y `AVRoutePickerView` para AirPlay.
+- **Miniaturas:** para los MP4, `AVAssetImageGenerator` directo. Para los MKV, el núcleo devuelve un fragmento MP4 (init + un segmento, `thumbnail_clip`) que AVFoundation sí puede abrir.
+- **Diagnóstico:** el núcleo registra cada petición HTTP (qué segmento, desde qué IP, con qué User-Agent) mediante un *callback* de UniFFI (`LogSink`), y la app registra los cambios de AirPlay y los errores de HLS. Para verlo todo:
+
+  ```bash
+  log stream --info --predicate 'subsystem == "app.ainoa.reproductor"'
+  ```
 - **iOS:** sesión de audio `.playback` / `.moviePlayback` con política `.longFormVideo` y modo de fondo `audio`, para que AirPlay siga aunque bloquees el teléfono. Abre archivos de la app Archivos (con acceso *security-scoped*, sin copiarlos) y desde «Abrir con…».
 - **macOS:** app con *sandbox* (lectura de archivos elegidos por el usuario y permisos de servidor/cliente de red), atajo ⌘O y arrastrar y soltar.
 - **Permisos de red:** `NSLocalNetworkUsageDescription`, y en App Transport Security `NSAllowsLocalNetworking` y `NSAllowsArbitraryLoadsForMedia` (necesarios para servir HTTP en la LAN).
@@ -199,7 +210,8 @@ Funciona **sin recodificar** con:
 |---|---|---|
 | Contenedor | MKV, MP4, MOV, M4V | WebM, AVI |
 | Video | H.264, HEVC/H.265 (incluido HDR10) | AV1, VP9, MPEG-2 |
-| Audio | AAC, Dolby Digital (AC-3), Dolby Digital Plus (E-AC-3) | DTS, Dolby TrueHD, FLAC, Opus |
+| Audio | AAC, Dolby Digital (AC-3), Dolby Digital Plus (E-AC-3, incluido 7.1) | DTS, Dolby TrueHD, FLAC, Opus |
+| Subtítulos | SRT, ASS/SSA, WebVTT (también comprimidos con zlib) | PGS, VobSub (imagen) |
 
 Las pistas de audio no compatibles aparecen deshabilitadas en el menú. Si un MKV no tiene ninguna compatible, se reproduce solo el video.
 
@@ -260,11 +272,13 @@ reproductor-open/
 
 ## Hoja de ruta
 
-- [ ] Subtítulos: convertir las pistas SRT/ASS del MKV a WebVTT dentro del HLS.
-- [ ] Recodificar al vuelo el audio DTS y TrueHD a AAC o AC-3.
-- [ ] E-AC-3 7.1 con substreams dependientes (hoy se anuncia como 5.1).
+- [x] Subtítulos: las pistas SRT/ASS/WebVTT del MKV se publican como WebVTT dentro del HLS.
+- [x] E-AC-3 7.1 con substreams dependientes.
 - [x] Soporte para Mac con procesador Intel (librería universal arm64 + x86_64).
-- [ ] Biblioteca con miniaturas y «seguir viendo».
+- [x] Biblioteca con miniaturas y «seguir viendo».
+- [ ] Recodificar al vuelo el audio DTS y TrueHD a AAC o AC-3. Requiere un decodificador de DTS/TrueHD, y hoy no hay ninguno maduro en Rust puro.
+- [ ] Subtítulos de imagen (PGS, VobSub).
+- [ ] Probar y documentar AirPlay con televisores de otras marcas (Roku, Samsung, LG).
 
 ¿Ideas o errores? Abre un *issue*. Las contribuciones son bienvenidas.
 
