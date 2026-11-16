@@ -59,7 +59,8 @@ pub struct Media {
     video_frame_ticks: Option<i64>,
     init: Vec<u8>,
     subtitles: Vec<SubTrack>,
-    /// Atributos de la variante en la master playlist.
+    /// Cadena RFC 6381 (se conserva para diagnóstico; no se publica en la master playlist).
+    #[allow(dead_code)]
     codecs: String,
     bandwidth: u64,
     resolution: (u32, u32),
@@ -289,10 +290,12 @@ impl Media {
                 s.number
             ));
         }
-        let codecs = if self.codecs.is_empty() { String::new() } else { format!(",CODECS=\"{}\"", self.codecs) };
+        // Sin CODECS: los receptores AirPlay de otras marcas (Roku, Samsung…) descartan la
+        // variante si creen no poder decodificar el audio (p. ej. "ac-3" en un Roku Express),
+        // aunque luego lo envíen tal cual a la tele. Sin el atributo, prueban a reproducirla.
         out.push_str(&format!(
-            "#EXT-X-STREAM-INF:BANDWIDTH={}{},RESOLUTION={}x{},SUBTITLES=\"subs\"\nvideo.m3u8\n",
-            self.bandwidth, codecs, self.resolution.0, self.resolution.1
+            "#EXT-X-STREAM-INF:BANDWIDTH={},RESOLUTION={}x{},SUBTITLES=\"subs\"\nvideo.m3u8\n",
+            self.bandwidth, self.resolution.0, self.resolution.1
         ));
         out
     }

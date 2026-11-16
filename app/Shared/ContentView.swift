@@ -177,13 +177,6 @@ struct PlayerDetail: View {
             #if os(iOS)
             RoutePicker()
                 .frame(width: 32, height: 32)
-            #else
-            if let player = model.player {
-                MacRoutePicker(player: player)
-                    .id(ObjectIdentifier(player))
-                    .frame(width: 30, height: 24)
-                    .help("Enviar el video a la tele (AirPlay)")
-            }
             #endif
             Button {
                 model.showImporter = true
