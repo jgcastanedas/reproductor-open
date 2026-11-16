@@ -56,7 +56,7 @@ struct LibraryRow: View {
     var body: some View {
         HStack(spacing: 12) {
             Thumbnail(url: library.thumbnailURL(for: item.id), available: item.hasThumbnail, isMKV: item.isMKV)
-                .frame(width: 104, height: 58)
+                .fixedSize()
                 .overlay(alignment: .bottomLeading) {
                     if item.progress > 0, !item.isFinished {
                         GeometryReader { geo in
@@ -113,17 +113,25 @@ struct Thumbnail: View {
     let url: URL
     let available: Bool
     let isMKV: Bool
+    var size = CGSize(width: 104, height: 58)
 
     var body: some View {
+        // Tamaño fijo en cada capa: la imagen (p. ej. 2,39:1) se escala para cubrir el marco
+        // y se recorta al borde redondeado, sin agrandar la fila de la lista.
         ZStack {
             LinearGradient(colors: [Theme.deep, Theme.abyss], startPoint: .topLeading, endPoint: .bottomTrailing)
             if available, let image = load() {
-                image.resizable().aspectRatio(contentMode: .fill)
+                image.resizable()
+                    .scaledToFill()
+                    .frame(width: size.width, height: size.height)
+                    .clipped()
             } else {
                 Image(systemName: "film").font(.title3).foregroundStyle(Theme.slate)
             }
         }
+        .frame(width: size.width, height: size.height)
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        .contentShape(RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.slate.opacity(0.6), lineWidth: 1))
     }
 
