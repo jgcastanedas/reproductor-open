@@ -204,6 +204,12 @@ impl StreamServer {
         self.inner.publish(Path::new(&path), audio_track, compat)
     }
 
+    /// Inicio del keyframe anterior a `seconds` en una URL publicada (para retomar en modo
+    /// compatible sin empezar en una pieza sin keyframe).
+    pub fn keyframe_start(&self, hls_url: String, seconds: f64) -> f64 {
+        self.inner.keyframe_start(&hls_url, seconds)
+    }
+
     /// Olvida los archivos publicados (libera memoria del índice).
     pub fn clear(&self) {
         self.inner.clear();

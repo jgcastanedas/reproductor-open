@@ -157,7 +157,11 @@ final class PlayerModel: ObservableObject {
                 let audioId = requested ?? Self.preferredAudio(info)
                 guard let server = try await self?.ensureServer() else { return }
                 let hls = try server.publish(path: path, audioTrack: audioId, compat: compat)
-                await self?.finishMKV(info: info, audio: audioId, hls: hls, resumeAt: resumeAt)
+                // En modo compatible las piezas intermedias no traen keyframe: retomar desde uno.
+                let start = compat
+                    ? resumeAt.map { CMTime(seconds: server.keyframeStart(hlsUrl: hls, seconds: $0.seconds), preferredTimescale: 600) }
+                    : resumeAt
+                await self?.finishMKV(info: info, audio: audioId, hls: hls, resumeAt: start)
             } catch {
                 await self?.fail(error)
             }

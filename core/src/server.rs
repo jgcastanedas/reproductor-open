@@ -62,6 +62,16 @@ impl Server {
         Ok(format!("http://{}:{}/{}/index.m3u8", lan_ip(), self.port, token))
     }
 
+    /// Punto seguro (keyframe) desde el que empezar a reproducir la URL publicada.
+    pub fn keyframe_start(&self, hls_url: &str, seconds: f64) -> f64 {
+        let sessions = self.sessions.lock().unwrap();
+        sessions
+            .iter()
+            .find(|(token, _)| hls_url.contains(token.as_str()))
+            .map(|(_, m)| m.keyframe_start_at(seconds))
+            .unwrap_or(seconds)
+    }
+
     pub fn clear(&self) {
         self.sessions.lock().unwrap().clear();
     }

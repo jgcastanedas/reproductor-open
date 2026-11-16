@@ -11,6 +11,9 @@ use crate::CoreError;
 
 /// Duración objetivo de cada segmento HLS.
 const TARGET_SEGMENT_SECS: f64 = 6.0;
+/// Modo compatible: duración máxima de cada pieza. Los receptores AirPlay con poca memoria
+/// (p. ej. un Roku Express) fallan con segmentos grandes (−12862 con uno de 9 MB).
+const COMPAT_PART_SECS: f64 = 2.0;
 
 impl From<mkv::MkvError> for CoreError {
     fn from(e: mkv::MkvError) -> Self {
@@ -62,6 +65,19 @@ pub struct Segment {
     pub is_last: bool,
 }
 
+/// Pieza publicada en la lista HLS. Normalmente es un segmento entero; en modo
+/// compatible, los segmentos largos se parten en piezas de ≤ COMPAT_PART_SECS cortando
+/// en orden de decodificación (solo la primera pieza empieza con keyframe).
+#[derive(Clone, Debug)]
+struct Part {
+    parent: usize,
+    start: i64,
+    end: i64,
+    first_of_parent: bool,
+    last_of_parent: bool,
+    is_last: bool,
+}
+
 pub struct Media {
     path: PathBuf,
     header: MkvHeader,
@@ -69,6 +85,7 @@ pub struct Media {
     audio: Option<AudioSel>,
     keyframes: Vec<Keyframe>,
     segments: Vec<Segment>,
+    parts: Vec<Part>,
     /// Retardo de reordenamiento (frames B), en ticks.
     reorder: i64,
     video_frame_ticks: Option<i64>,
@@ -243,6 +260,8 @@ impl Media {
             .filter(|&d| d > last_kf)
             .unwrap_or(last_kf + (10.0 * 1e9 / scale) as i64);
         let segments = plan_segments(&keyframes, target, total_end);
+        let part_len = if compat { Some((COMPAT_PART_SECS * 1e9 / scale) as i64) } else { None };
+        let parts = plan_parts(&segments, part_len);
         let video_frame_ticks = video.default_duration_ns.map(|d| (d as f64 / scale).round() as i64).filter(|&d| d > 0);
 
         let mut used_names: Vec<String> = vec![];
@@ -294,6 +313,7 @@ impl Media {
             audio: audio.map(|(a, _)| a),
             keyframes,
             segments,
+            parts,
             reorder,
             video_frame_ticks,
             init,
@@ -342,17 +362,20 @@ impl Media {
         let mut out = String::new();
         out.push_str("#EXTM3U\n#EXT-X-VERSION:7\n");
         out.push_str(&format!("#EXT-X-TARGETDURATION:{}\n", self.target_duration()));
-        out.push_str("#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-INDEPENDENT-SEGMENTS\n#EXT-X-MEDIA-SEQUENCE:0\n");
-        out.push_str("#EXT-X-MAP:URI=\"init.mp4\"\n");
-        for (i, s) in self.segments.iter().enumerate() {
-            out.push_str(&format!("#EXTINF:{:.5},\nseg{}.m4s\n", self.secs(s.end - s.start), i));
+        out.push_str("#EXT-X-PLAYLIST-TYPE:VOD\n");
+        if self.parts.len() == self.segments.len() {
+            out.push_str("#EXT-X-INDEPENDENT-SEGMENTS\n");
+        }
+        out.push_str("#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-MAP:URI=\"init.mp4\"\n");
+        for (i, p) in self.parts.iter().enumerate() {
+            out.push_str(&format!("#EXTINF:{:.5},\nseg{}.m4s\n", self.secs(p.end - p.start), i));
         }
         out.push_str("#EXT-X-ENDLIST\n");
         out
     }
 
     fn target_duration(&self) -> u64 {
-        let max = self.segments.iter().map(|s| self.secs(s.end - s.start)).fold(0.0, f64::max);
+        let max = self.parts.iter().map(|p| self.secs(p.end - p.start)).fold(0.0, f64::max);
         max.ceil().max(1.0) as u64
     }
 
@@ -361,8 +384,8 @@ impl Media {
         let mut out = String::from("#EXTM3U\n#EXT-X-VERSION:7\n");
         out.push_str(&format!("#EXT-X-TARGETDURATION:{}\n", self.target_duration()));
         out.push_str("#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-MEDIA-SEQUENCE:0\n");
-        for (i, s) in self.segments.iter().enumerate() {
-            out.push_str(&format!("#EXTINF:{:.5},\n{}/seg{}.vtt\n", self.secs(s.end - s.start), track, i));
+        for (i, p) in self.parts.iter().enumerate() {
+            out.push_str(&format!("#EXTINF:{:.5},\n{}/seg{}.vtt\n", self.secs(p.end - p.start), track, i));
         }
         out.push_str("#EXT-X-ENDLIST\n");
         Some(out)
@@ -375,11 +398,12 @@ impl Media {
             .iter()
             .find(|s| s.number == track)
             .ok_or_else(|| CoreError::InvalidFile { detail: format!("no hay subtítulos en la pista {track}") })?;
-        let seg = self
-            .segments
+        let part = self
+            .parts
             .get(n)
             .ok_or_else(|| CoreError::InvalidFile { detail: format!("segmento {n} fuera de rango") })?
             .clone();
+        let seg = Segment { start: part.start, end: part.end, ..self.segments[part.parent].clone() };
         let (_, mut r) = mkv::read_header(&self.path)?;
         let fallback = sub.default_duration.filter(|&d| d > 0).unwrap_or((3.0 * 1e9 / self.header.timestamp_scale as f64) as i64);
         let mut cues: Vec<(i64, i64, String)> = vec![];
@@ -417,9 +441,9 @@ impl Media {
     /// MP4 autocontenido (init + el segmento que contiene `at_seconds`) para generar miniaturas.
     pub fn clip_at(&self, at_seconds: f64) -> Result<Vec<u8>, CoreError> {
         let n = self
-            .segments
+            .parts
             .iter()
-            .position(|s| self.secs(s.end) > at_seconds)
+            .position(|p| p.first_of_parent && self.secs(self.segments[p.parent].end) > at_seconds)
             .unwrap_or(0);
         let mut out = self.init.clone();
         out.extend(self.segment(n)?);
@@ -434,7 +458,7 @@ impl Media {
     fn transcode_segment(
         &self,
         a: &AudioSel,
-        seg: &Segment,
+        seg: &Part,
         frames: &[(i64, Vec<u8>)],
     ) -> Result<(u64, Vec<Vec<u8>>), CoreError> {
         let t = a.transcode.as_ref().expect("modo compatible");
@@ -473,6 +497,18 @@ impl Media {
         Ok((base, out.packets[from as usize..to as usize].to_vec()))
     }
 
+    /// Inicio (en segundos de presentación) del segmento con keyframe que contiene `seconds`.
+    /// En modo compatible conviene empezar ahí: las piezas intermedias no traen keyframe.
+    pub fn keyframe_start_at(&self, seconds: f64) -> f64 {
+        let seg = self
+            .segments
+            .iter()
+            .rev()
+            .find(|s| self.secs(s.start + self.reorder) <= seconds)
+            .or(self.segments.first());
+        seg.map(|s| self.secs(s.start + self.reorder)).unwrap_or(0.0)
+    }
+
     /// Cluster desde el que leer un segmento (el del keyframe anterior, para no perder
     /// audio o subtítulos que empiezan un poco antes del keyframe).
     fn read_start(&self, seg: &Segment) -> u64 {
@@ -494,11 +530,12 @@ impl Media {
 
     /// Genera el segmento `n` (moof + mdat).
     pub fn segment(&self, n: usize) -> Result<Vec<u8>, CoreError> {
-        let seg = self
-            .segments
+        let part = self
+            .parts
             .get(n)
             .ok_or_else(|| CoreError::InvalidFile { detail: format!("segmento {n} fuera de rango") })?
             .clone();
+        let seg = self.segments[part.parent].clone();
         let start_pos = self.read_start(&seg);
         let (_, mut r) = mkv::read_header(&self.path)?;
 
@@ -516,9 +553,9 @@ impl Media {
         let (a_from, a_to) = match self.audio.as_ref().and_then(|a| a.transcode.as_ref().map(|t| (a, t))) {
             Some((a, t)) => {
                 let frame = (t.src_spf as f64 * 1e9 / a.timescale as f64 / self.header.timestamp_scale as f64).round() as i64;
-                (seg.start - TRANSCODE_PREROLL_FRAMES * frame, seg.end + TRANSCODE_POSTROLL_FRAMES * frame)
+                (part.start - TRANSCODE_PREROLL_FRAMES * frame, part.end + TRANSCODE_POSTROLL_FRAMES * frame)
             }
-            None => (seg.start, seg.end),
+            None => (part.start, part.end),
         };
         let default_frame = self.video_frame_ticks.unwrap_or(0);
 
@@ -580,9 +617,12 @@ impl Media {
             sorted.sort_unstable();
             let dts: Vec<i64> = sorted.iter().map(|&t| self.to_90k(t)).collect();
             let next_dts = if seg.is_last { None } else { Some(self.to_90k(seg.end)) };
-            let mut samples = Vec::with_capacity(v_pts.len());
-            let mut data = Vec::with_capacity(v_data.iter().map(|d| d.len()).sum());
-            for i in 0..v_pts.len() {
+            // Pieza: frames (en orden de decodificación) cuyo DTS cae en [part.start, part.end).
+            let from = if part.first_of_parent { 0 } else { sorted.partition_point(|&t| t < part.start) };
+            let to = if part.last_of_parent { v_pts.len() } else { sorted.partition_point(|&t| t < part.end) };
+            let mut samples = Vec::with_capacity(to.saturating_sub(from));
+            let mut data = Vec::new();
+            for i in from..to {
                 let dur = if i + 1 < dts.len() {
                     dts[i + 1] - dts[i]
                 } else {
@@ -600,21 +640,23 @@ impl Media {
                 });
                 data.extend_from_slice(&v_data[i]);
             }
-            tracks.push(TrackFragment {
-                track_id: fmp4::VIDEO_TRACK_ID,
-                base_decode_time: dts[0].max(0) as u64,
-                samples,
-                data,
-                is_video: true,
-            });
+            if from < to {
+                tracks.push(TrackFragment {
+                    track_id: fmp4::VIDEO_TRACK_ID,
+                    base_decode_time: dts[from].max(0) as u64,
+                    samples,
+                    data,
+                    is_video: true,
+                });
+            }
         }
 
         // --- Audio: muestras consecutivas de duración fija.
         a_frames.sort_by_key(|f| f.0);
         let audio_packets: Option<(u64, Vec<Vec<u8>>)> = match &self.audio {
-            Some(a) if a.transcode.is_some() && !a_frames.is_empty() => Some(self.transcode_segment(a, &seg, &a_frames)?),
+            Some(a) if a.transcode.is_some() && !a_frames.is_empty() => Some(self.transcode_segment(a, &part, &a_frames)?),
             Some(a) => {
-                let kept: Vec<&(i64, Vec<u8>)> = a_frames.iter().filter(|f| f.0 >= seg.start && f.0 < seg.end).collect();
+                let kept: Vec<&(i64, Vec<u8>)> = a_frames.iter().filter(|f| f.0 >= part.start && f.0 < part.end).collect();
                 kept.first().map(|first| {
                     (self.to_audio(first.0 + self.reorder, a.timescale), kept.iter().map(|f| f.1.clone()).collect())
                 })
@@ -660,6 +702,30 @@ fn reorder_delay(pts_decode_order: &[i64]) -> i64 {
     sorted.iter().zip(pts_decode_order).map(|(s, p)| s - p).max().unwrap_or(0).max(0)
 }
 
+fn plan_parts(segments: &[Segment], max_len: Option<i64>) -> Vec<Part> {
+    let mut parts = vec![];
+    for (i, s) in segments.iter().enumerate() {
+        let dur = (s.end - s.start).max(1);
+        let count = match max_len {
+            Some(m) if m > 0 => ((dur + m - 1) / m).max(1),
+            _ => 1,
+        };
+        for k in 0..count {
+            let start = s.start + dur * k / count;
+            let end = if k + 1 == count { s.end } else { s.start + dur * (k + 1) / count };
+            parts.push(Part {
+                parent: i,
+                start,
+                end,
+                first_of_parent: k == 0,
+                last_of_parent: k + 1 == count,
+                is_last: s.is_last && k + 1 == count,
+            });
+        }
+    }
+    parts
+}
+
 fn plan_segments(kfs: &[Keyframe], target: i64, total_end: i64) -> Vec<Segment> {
     let mut starts: Vec<usize> = vec![0];
     for (i, k) in kfs.iter().enumerate().skip(1) {
@@ -686,6 +752,18 @@ mod tests {
         // Orden de decodificación I0 P3 B1 B2
         assert_eq!(reorder_delay(&[0, 3, 1, 2]), 1);
         assert_eq!(reorder_delay(&[0, 1, 2, 3]), 0);
+    }
+
+    #[test]
+    fn parts_split_long_segments() {
+        let segs = vec![
+            Segment { start: 0, end: 5000, first_kf: 0, is_last: false },
+            Segment { start: 5000, end: 6000, first_kf: 1, is_last: true },
+        ];
+        let p = plan_parts(&segs, Some(2000));
+        let b: Vec<(i64, i64, bool, bool)> = p.iter().map(|p| (p.start, p.end, p.first_of_parent, p.is_last)).collect();
+        assert_eq!(b, vec![(0, 1666, true, false), (1666, 3333, false, false), (3333, 5000, false, false), (5000, 6000, true, true)]);
+        assert_eq!(plan_parts(&segs, None).len(), 2);
     }
 
     #[test]
