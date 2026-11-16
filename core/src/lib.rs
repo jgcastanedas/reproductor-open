@@ -108,7 +108,7 @@ pub fn probe(path: String) -> Result<MediaInfo, CoreError> {
 /// para que AVAssetImageGenerator saque una miniatura de un MKV.
 #[uniffi::export]
 pub fn thumbnail_clip(path: String, at_seconds: f64) -> Result<Vec<u8>, CoreError> {
-    media::Media::open(Path::new(&path), None, false)?.clip_at(at_seconds)
+    media::Media::open(Path::new(&path), None, false, false)?.clip_at(at_seconds)
 }
 
 /// Recibe las líneas de diagnóstico del núcleo (peticiones HTTP, errores).
@@ -199,9 +199,11 @@ impl StreamServer {
     /// Prepara el MKV y devuelve la URL HLS para AVPlayer.
     /// `audio_track`: id de `AudioTrackInfo`, o nil para elegir automáticamente.
     /// Puede tardar unos segundos si el archivo no trae índice (Cues).
-    /// `compat`: modo para teles AirPlay de otras marcas (sin subtítulos, audio en AAC).
-    pub fn publish(&self, path: String, audio_track: Option<u64>, compat: bool) -> Result<String, CoreError> {
-        self.inner.publish(Path::new(&path), audio_track, compat)
+    /// `compat`: modo para teles AirPlay de otras marcas (piezas cortas, audio en AAC).
+    /// `subtitles`: incluir los subtítulos de texto (van en una master playlist, que
+    /// algunas teles AirPlay de otras marcas no aceptan).
+    pub fn publish(&self, path: String, audio_track: Option<u64>, compat: bool, subtitles: bool) -> Result<String, CoreError> {
+        self.inner.publish(Path::new(&path), audio_track, compat, subtitles)
     }
 
     /// Inicio del keyframe anterior a `seconds` en una URL publicada (para retomar en modo

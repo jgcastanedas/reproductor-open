@@ -73,10 +73,10 @@ Muchas teles y reproductores que no son de Apple traen AirPlay, pero aceptan men
 Por eso la app tiene un **modo compatible**:
 
 - **Audio:** el Dolby Digital (AC-3 / E-AC-3) se convierte **a AAC estéreo** mientras se envía la película. Cada segmento se convierte por separado con AudioToolbox, alineado a una rejilla global de 1024 muestras para que encajen sin cortes.
-- **Lista de reproducción:** se publica la del video directamente, sin la lista de subtítulos.
+- **Subtítulos:** se envían en una lista principal (master playlist) sin `CODECS`, ahora que el audio ya es AAC. Si la tele aun así la rechaza, la app quita los subtítulos, publica directamente la lista del video y retoma en el mismo segundo. Se pueden quitar a mano con **«Tele → Enviar subtítulos a la tele»**.
 - **Piezas pequeñas:** la película se sirve en piezas de 2 segundos como máximo. Un Roku Express fallaba con segmentos de 9 MB (error `-12862`) y reiniciaba en bucle; con piezas de unos 2,5 MB la reproducción es continua. Cada pieza se corta en orden de decodificación y, al retomar, la app arranca en un keyframe.
 - **Activación automática:** si una tele rechaza el video por AirPlay, la app activa el modo y retoma en el mismo segundo. También se puede activar a mano en el menú **«Tele»**.
-- **Limitación:** en este modo **no hay subtítulos** en la tele. En el Mac y con Apple TV se conservan el sonido 5.1 original y los subtítulos.
+- **Limitación:** el sonido llega en estéreo. En el Mac y con Apple TV se conserva el 5.1 original.
 
 > En macOS, usa el botón de AirPlay **de los controles del reproductor**. Un selector de AirPlay genérico solo envía el audio de la app a las teles de otras marcas.
 
@@ -302,7 +302,7 @@ reproductor-open/
 - [ ] Recodificar al vuelo el audio DTS y TrueHD a AAC o AC-3. Requiere un decodificador de DTS/TrueHD, y hoy no hay ninguno maduro en Rust puro.
 - [ ] Subtítulos de imagen (PGS, VobSub).
 - [x] AirPlay con teles de otras marcas (Roku, Samsung, LG): modo compatible con audio AAC.
-- [ ] Subtítulos en el modo compatible (declararlos de una forma que esas teles acepten).
+- [x] Subtítulos en el modo compatible, con vuelta atrás automática si la tele no los acepta.
 
 ¿Ideas o errores? Abre un *issue*. Las contribuciones son bienvenidas.
 

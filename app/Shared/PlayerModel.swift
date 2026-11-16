@@ -18,9 +18,12 @@ final class PlayerModel: ObservableObject {
     @Published var showImporter = false
     /// Aviso pasajero (no es un error), p. ej. al activar el modo compatible.
     @Published var notice: String?
-    /// Modo para teles AirPlay de otras marcas (Roku, Samsung, LG…): audio AAC estéreo y sin
-    /// subtítulos, que es lo que esas teles aceptan. Se activa solo si una tele rechaza el video.
+    /// Modo para teles AirPlay de otras marcas (Roku, Samsung, LG…): audio AAC estéreo en
+    /// piezas cortas, que es lo que esas teles aceptan. Se activa solo si una tele rechaza el video.
     @Published private(set) var compatMode = UserDefaults.standard.bool(forKey: "modoCompatible")
+    /// En modo compatible, enviar también los subtítulos (van en una master playlist que
+    /// algunas teles rechazan). Se desactiva solo si la tele falla con ellos.
+    @Published private(set) var tvSubtitles = UserDefaults.standard.object(forKey: "subtitulosEnTele") as? Bool ?? true
 
     let library: Library
 
@@ -28,6 +31,8 @@ final class PlayerModel: ObservableObject {
     private var scopedURL: URL?
     private var currentURL: URL?
     private var isMKV = false
+    /// Si la lista publicada del MKV actual incluye subtítulos.
+    private var publishedSubtitles = false
     private var observations: [NSKeyValueObservation] = []
     private var timeObserver: Any?
     private var tokens: [NSObjectProtocol] = []
@@ -53,6 +58,17 @@ final class PlayerModel: ObservableObject {
         Log.player.info("Modo compatible: \(on ? "activado" : "desactivado", privacy: .public)")
         if let reason { showNotice(reason) }
         guard isMKV, let url = currentURL else { return }
+        openMKV(url, audio: selectedAudio, resumeAt: currentPosition())
+    }
+
+    /// En modo compatible, incluye o quita los subtítulos y recarga el MKV en el mismo punto.
+    func setTVSubtitles(_ on: Bool, reason: String? = nil) {
+        guard on != tvSubtitles else { return }
+        tvSubtitles = on
+        UserDefaults.standard.set(on, forKey: "subtitulosEnTele")
+        Log.player.info("Subtítulos en la tele (modo compatible): \(on ? "sí" : "no", privacy: .public)")
+        if let reason { showNotice(reason) }
+        guard compatMode, isMKV, let url = currentURL else { return }
         openMKV(url, audio: selectedAudio, resumeAt: currentPosition())
     }
 
@@ -146,6 +162,7 @@ final class PlayerModel: ObservableObject {
         errorMessage = nil
         let path = url.path(percentEncoded: false)
         let compat = compatMode
+        let withSubtitles = !compat || tvSubtitles
         Task.detached(priority: .userInitiated) { [weak self] in
             do {
                 let info = try probe(path: path)
@@ -156,12 +173,13 @@ final class PlayerModel: ObservableObject {
                 let requested = audio.flatMap { id in info.audioTracks.first { $0.id == id && $0.supported }?.id }
                 let audioId = requested ?? Self.preferredAudio(info)
                 guard let server = try await self?.ensureServer() else { return }
-                let hls = try server.publish(path: path, audioTrack: audioId, compat: compat)
+                let hls = try server.publish(path: path, audioTrack: audioId, compat: compat, subtitles: withSubtitles)
                 // En modo compatible las piezas intermedias no traen keyframe: retomar desde uno.
                 let start = compat
                     ? resumeAt.map { CMTime(seconds: server.keyframeStart(hlsUrl: hls, seconds: $0.seconds), preferredTimescale: 600) }
                     : resumeAt
-                await self?.finishMKV(info: info, audio: audioId, hls: hls, resumeAt: start)
+                let hasSubtitles = withSubtitles && info.subtitleTracks.contains(where: \.supported)
+                await self?.finishMKV(info: info, audio: audioId, hls: hls, resumeAt: start, subtitles: hasSubtitles)
             } catch {
                 await self?.fail(error)
             }
@@ -181,8 +199,9 @@ final class PlayerModel: ObservableObject {
         return s
     }
 
-    private func finishMKV(info: MediaInfo, audio: UInt64?, hls: String, resumeAt: CMTime?) {
+    private func finishMKV(info: MediaInfo, audio: UInt64?, hls: String, resumeAt: CMTime?, subtitles: Bool) {
         guard let url = URL(string: hls) else { return }
+        publishedSubtitles = subtitles
         Log.player.info("HLS listo: \(hls, privacy: .public)")
         self.info = info
         self.selectedAudio = audio
@@ -248,11 +267,16 @@ final class PlayerModel: ObservableObject {
         }
     }
 
-    /// Si una tele AirPlay de otra marca rechaza el video (no admite Dolby Digital ni la
-    /// lista con subtítulos), se pasa al modo compatible y se retoma en el mismo punto.
+    /// Si una tele AirPlay de otra marca rechaza el video, se baja un escalón y se retoma en
+    /// el mismo punto: primero el modo compatible (audio AAC estéreo, piezas cortas) y, si
+    /// aun así falla, sin la master playlist de subtítulos.
     private func handleFailure(_ error: Error?) {
         if isExternal, isMKV, !compatMode {
-            setCompatMode(true, reason: "Tu tele no admite el audio Dolby Digital ni los subtítulos por AirPlay. Activé el modo compatible (audio AAC estéreo).")
+            setCompatMode(true, reason: "Tu tele no admite el audio Dolby Digital por AirPlay. Activé el modo compatible (audio AAC estéreo).")
+            return
+        }
+        if isExternal, isMKV, compatMode, publishedSubtitles {
+            setTVSubtitles(false, reason: "Tu tele no acepta los subtítulos por AirPlay. Los quité para que el video siga.")
             return
         }
         errorMessage = error?.localizedDescription ?? "No se pudo reproducir el video."

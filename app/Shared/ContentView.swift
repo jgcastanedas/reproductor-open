@@ -195,7 +195,12 @@ struct PlayerDetail: View {
                     get: { model.compatMode },
                     set: { model.setCompatMode($0) }
                 ))
-                Text("Convierte el audio Dolby Digital a AAC estéreo y quita los subtítulos, que es lo que esas teles aceptan por AirPlay. Con Apple TV o en esta pantalla no hace falta.")
+                Toggle("Enviar subtítulos a la tele", isOn: Binding(
+                    get: { model.tvSubtitles },
+                    set: { model.setTVSubtitles($0) }
+                ))
+                .disabled(!model.compatMode)
+                Text("Convierte el audio Dolby Digital a AAC estéreo en piezas cortas, que es lo que esas teles aceptan por AirPlay. Si la tele rechaza los subtítulos, se quitan solos. Con Apple TV o en esta pantalla no hace falta.")
             } label: {
                 Label("Tele", systemImage: model.compatMode ? "tv.badge.wifi" : "tv")
             }

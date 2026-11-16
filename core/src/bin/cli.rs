@@ -46,7 +46,7 @@ fn main() {
     }
     let server = StreamServer::new().expect("no se pudo iniciar el servidor");
     let t = std::time::Instant::now();
-    match server.publish(path, audio, false) {
+    match server.publish(path, audio, false, true) {
         Ok(url) => {
             println!("Listo en {:.2?}\n{url}\nCtrl+C para salir.", t.elapsed());
             loop {

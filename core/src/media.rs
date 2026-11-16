@@ -113,9 +113,11 @@ pub fn subtitle_supported(t: &Track) -> bool {
 }
 
 impl Media {
-    /// `compat`: modo para teles AirPlay de otras marcas (Roku, Samsung, LG…): sin
-    /// master playlist ni subtítulos, y el audio Dolby Digital convertido a AAC estéreo.
-    pub fn open(path: &Path, audio_track: Option<u64>, compat: bool) -> Result<Self, CoreError> {
+    /// `compat`: modo para teles AirPlay de otras marcas (Roku, Samsung, LG…): piezas
+    /// cortas y el audio Dolby Digital convertido a AAC estéreo.
+    /// `subtitles`: incluir los subtítulos de texto (con ellos, la lista principal es una
+    /// master playlist; algunas teles AirPlay de otras marcas no la aceptan).
+    pub fn open(path: &Path, audio_track: Option<u64>, compat: bool, subtitles: bool) -> Result<Self, CoreError> {
         let (header, mut r) = mkv::read_header(path)?;
 
         let video = header
@@ -268,7 +270,7 @@ impl Media {
         let subtitles = header
             .tracks
             .iter()
-            .filter(|t| !compat && t.kind == mkv::TRACK_SUBTITLE && subtitle_supported(t))
+            .filter(|t| subtitles && t.kind == mkv::TRACK_SUBTITLE && subtitle_supported(t))
             .map(|t| {
                 let language = t
                     .language
@@ -337,7 +339,11 @@ impl Media {
         if self.subtitles.is_empty() {
             return self.video_playlist();
         }
-        let mut out = String::from("#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-INDEPENDENT-SEGMENTS\n");
+        let mut out = String::from("#EXTM3U\n#EXT-X-VERSION:7\n");
+        // En modo compatible las piezas intermedias no empiezan en keyframe.
+        if self.parts.len() == self.segments.len() {
+            out.push_str("#EXT-X-INDEPENDENT-SEGMENTS\n");
+        }
         for s in &self.subtitles {
             out.push_str(&format!(
                 "#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs\",NAME=\"{}\",LANGUAGE=\"{}\",DEFAULT=NO,AUTOSELECT={},FORCED={},URI=\"subs/{}.m3u8\"\n",

@@ -5,3 +5,4 @@ app/ReproductorCore.xcframework/
 app/ReproductorAirPlay.xcodeproj/
 .DS_Store
 xcuserdata/
+build/
