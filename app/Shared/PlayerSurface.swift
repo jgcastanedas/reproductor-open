@@ -22,6 +22,24 @@ struct PlayerSurface: NSViewRepresentable {
         if view.player !== player { view.player = player }
     }
 }
+/// Botón de AirPlay de la barra de herramientas, atado al reproductor de video
+/// (sin `player`, macOS enviaría solo el audio de la app).
+struct MacRoutePicker: NSViewRepresentable {
+    let player: AVPlayer
+
+    func makeNSView(context: Context) -> AVRoutePickerView {
+        let view = AVRoutePickerView()
+        view.player = player
+        view.isRoutePickerButtonBordered = false
+        view.setRoutePickerButtonColor(NSColor(Theme.sky), for: .normal)
+        view.setRoutePickerButtonColor(NSColor(Theme.accent), for: .active)
+        return view
+    }
+
+    func updateNSView(_ view: AVRoutePickerView, context: Context) {
+        if view.player !== player { view.player = player }
+    }
+}
 #else
 struct PlayerSurface: View {
     let player: AVPlayer
