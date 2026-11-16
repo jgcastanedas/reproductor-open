@@ -55,8 +55,8 @@ impl Server {
     }
 
     /// Prepara un archivo y devuelve la URL de su lista HLS.
-    pub fn publish(&self, path: &Path, audio_track: Option<u64>) -> Result<String, CoreError> {
-        let media = Arc::new(Media::open(path, audio_track)?);
+    pub fn publish(&self, path: &Path, audio_track: Option<u64>, compat: bool) -> Result<String, CoreError> {
+        let media = Arc::new(Media::open(path, audio_track, compat)?);
         let token = new_token(path);
         self.sessions.lock().unwrap().insert(token.clone(), media);
         Ok(format!("http://{}:{}/{}/index.m3u8", lan_ip(), self.port, token))

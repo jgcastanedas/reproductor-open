@@ -86,6 +86,12 @@ pub fn audio_params(t: &Track, kind: AudioKind, first_frame: &[u8]) -> Option<(A
     }
 }
 
+/// AudioSpecificConfig de AAC-LC para una frecuencia y número de canales.
+pub fn aac_lc_asc(rate: u32, channels: u8) -> Vec<u8> {
+    let idx = AAC_RATES.iter().position(|&r| r == rate).unwrap_or(3) as u8;
+    vec![(2 << 3) | (idx >> 1), ((idx & 1) << 7) | (channels.min(7) << 3)]
+}
+
 fn asc_sample_rate(asc: &[u8]) -> Option<u32> {
     if asc.len() < 2 {
         return None;
@@ -312,6 +318,12 @@ fn parse_eac3(f: &[u8]) -> Option<Eac3Header> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn aac_lc_config() {
+        assert_eq!(aac_lc_asc(48000, 2), vec![0x11, 0x90]);
+        assert_eq!(aac_lc_asc(44100, 2), vec![0x12, 0x10]);
+    }
 
     #[test]
     fn asc_rate() {

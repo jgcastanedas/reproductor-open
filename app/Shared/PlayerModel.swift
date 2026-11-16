@@ -16,6 +16,11 @@ final class PlayerModel: ObservableObject {
     @Published private(set) var currentItemID: UUID?
     @Published var errorMessage: String?
     @Published var showImporter = false
+    /// Aviso pasajero (no es un error), p. ej. al activar el modo compatible.
+    @Published var notice: String?
+    /// Modo para teles AirPlay de otras marcas (Roku, Samsung, LG…): audio AAC estéreo y sin
+    /// subtítulos, que es lo que esas teles aceptan. Se activa solo si una tele rechaza el video.
+    @Published private(set) var compatMode = UserDefaults.standard.bool(forKey: "modoCompatible")
 
     let library: Library
 
@@ -29,12 +34,39 @@ final class PlayerModel: ObservableObject {
     private var legibleGroup: AVMediaSelectionGroup?
     /// Subtítulo elegido, para reaplicarlo al cambiar de pista de audio.
     private var wantedSubtitle: (tag: String?, forced: Bool)?
+    /// Última posición conocida (para retomar si el ítem falla).
+    private var lastPosition: CMTime?
 
     static let mkvExtensions: Set<String> = ["mkv", "mk3d"]
 
     init(library: Library) {
         self.library = library
         setLogSink(sink: CoreLogSink())
+        setAudioTranscoder(transcoder: AppleAudioTranscoder())
+    }
+
+    /// Activa o desactiva el modo compatible y, si hay un MKV abierto, lo recarga en el mismo punto.
+    func setCompatMode(_ on: Bool, reason: String? = nil) {
+        guard on != compatMode else { return }
+        compatMode = on
+        UserDefaults.standard.set(on, forKey: "modoCompatible")
+        Log.player.info("Modo compatible: \(on ? "activado" : "desactivado", privacy: .public)")
+        if let reason { showNotice(reason) }
+        guard isMKV, let url = currentURL else { return }
+        openMKV(url, audio: selectedAudio, resumeAt: currentPosition())
+    }
+
+    private func currentPosition() -> CMTime? {
+        if let t = player?.currentTime(), t.isValid, t.seconds > 1 { return t }
+        return lastPosition
+    }
+
+    private func showNotice(_ text: String) {
+        notice = text
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(8))
+            if notice == text { notice = nil }
+        }
     }
 
     // MARK: - Abrir
@@ -75,7 +107,7 @@ final class PlayerModel: ObservableObject {
     func selectAudio(_ id: UInt64) {
         guard let url = currentURL, id != selectedAudio else { return }
         if let itemID = currentItemID { library.setAudioTrack(itemID, id) }
-        openMKV(url, audio: id, resumeAt: player?.currentTime())
+        openMKV(url, audio: id, resumeAt: currentPosition())
     }
 
     func selectSubtitle(_ option: AVMediaSelectionOption?) {
@@ -110,6 +142,7 @@ final class PlayerModel: ObservableObject {
         isLoading = true
         errorMessage = nil
         let path = url.path(percentEncoded: false)
+        let compat = compatMode
         Task.detached(priority: .userInitiated) { [weak self] in
             do {
                 let info = try probe(path: path)
@@ -120,7 +153,7 @@ final class PlayerModel: ObservableObject {
                 let requested = audio.flatMap { id in info.audioTracks.first { $0.id == id && $0.supported }?.id }
                 let audioId = requested ?? Self.preferredAudio(info)
                 guard let server = try await self?.ensureServer() else { return }
-                let hls = try server.publish(path: path, audioTrack: audioId)
+                let hls = try server.publish(path: path, audioTrack: audioId, compat: compat)
                 await self?.finishMKV(info: info, audio: audioId, hls: hls, resumeAt: resumeAt)
             } catch {
                 await self?.fail(error)
@@ -185,25 +218,37 @@ final class PlayerModel: ObservableObject {
         tokens.append(center.addObserver(forName: AVPlayerItem.failedToPlayToEndTimeNotification, object: item, queue: .main) { [weak self] note in
             let error = note.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
             Log.player.error("Falló la reproducción: \(String(describing: error), privacy: .public)")
-            Task { @MainActor in self?.errorMessage = error?.localizedDescription ?? "La reproducción se detuvo por un error." }
+            Task { @MainActor in self?.handleFailure(error) }
         })
-        timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 5, preferredTimescale: 1), queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.saveProgress() }
+        timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 5, preferredTimescale: 1), queue: .main) { [weak self] time in
+            Task { @MainActor in
+                if time.isValid, time.seconds > 1 { self?.lastPosition = time }
+                self?.saveProgress()
+            }
         }
     }
 
     private func itemStatusChanged(_ item: AVPlayerItem) {
         switch item.status {
         case .failed:
-            let error = item.error
-            Log.player.error("El video no se pudo cargar: \(String(describing: error), privacy: .public)")
-            errorMessage = error?.localizedDescription ?? "No se pudo cargar el video."
+            Log.player.error("El video no se pudo cargar: \(String(describing: item.error), privacy: .public)")
+            handleFailure(item.error)
         case .readyToPlay:
             Task { await loadSubtitles(for: item) }
             makeThumbnailIfNeeded(duration: item.duration.seconds)
         default:
             break
         }
+    }
+
+    /// Si una tele AirPlay de otra marca rechaza el video (no admite Dolby Digital ni la
+    /// lista con subtítulos), se pasa al modo compatible y se retoma en el mismo punto.
+    private func handleFailure(_ error: Error?) {
+        if isExternal, isMKV, !compatMode {
+            setCompatMode(true, reason: "Tu tele no admite el audio Dolby Digital ni los subtítulos por AirPlay. Activé el modo compatible (audio AAC estéreo).")
+            return
+        }
+        errorMessage = error?.localizedDescription ?? "No se pudo reproducir el video."
     }
 
     private func loadSubtitles(for item: AVPlayerItem) async {

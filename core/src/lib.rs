@@ -108,7 +108,7 @@ pub fn probe(path: String) -> Result<MediaInfo, CoreError> {
 /// para que AVAssetImageGenerator saque una miniatura de un MKV.
 #[uniffi::export]
 pub fn thumbnail_clip(path: String, at_seconds: f64) -> Result<Vec<u8>, CoreError> {
-    media::Media::open(Path::new(&path), None)?.clip_at(at_seconds)
+    media::Media::open(Path::new(&path), None, false)?.clip_at(at_seconds)
 }
 
 /// Recibe las líneas de diagnóstico del núcleo (peticiones HTTP, errores).
@@ -133,6 +133,56 @@ pub(crate) fn emit(line: String) {
     }
 }
 
+/// Audio convertido a AAC por la plataforma.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct TranscodedAudio {
+    /// Índice global del primer paquete en la rejilla de 1024 muestras:
+    /// el paquete i cubre las muestras [(first_frame_index + i)·1024, …+1024).
+    pub first_frame_index: i64,
+    /// Paquetes AAC-LC estéreo (access units sin cabecera ADTS).
+    pub packets: Vec<Vec<u8>>,
+}
+
+#[derive(Debug, thiserror::Error, uniffi::Error)]
+pub enum TranscodeError {
+    #[error("{detail}")]
+    Failed { detail: String },
+}
+
+impl From<uniffi::UnexpectedUniFFICallbackError> for TranscodeError {
+    fn from(e: uniffi::UnexpectedUniFFICallbackError) -> Self {
+        TranscodeError::Failed { detail: e.reason }
+    }
+}
+
+/// Conversor de audio Dolby Digital → AAC que aporta la plataforma (AudioToolbox en Apple).
+/// Se usa en el modo compatible para teles de otras marcas, que no decodifican AC-3.
+#[uniffi::export(with_foreign)]
+pub trait AudioTranscoder: Send + Sync {
+    /// `frames`: frames AC-3/E-AC-3 consecutivos (`codec` = "ac-3" o "ec-3").
+    /// `first_sample`: posición, en muestras de la línea de tiempo global, del primer frame.
+    /// Debe devolver AAC alineado a la rejilla global de 1024 muestras.
+    fn to_aac(
+        &self,
+        codec: String,
+        sample_rate: u32,
+        channels: u32,
+        first_sample: i64,
+        frames: Vec<Vec<u8>>,
+    ) -> Result<TranscodedAudio, TranscodeError>;
+}
+
+static TRANSCODER: RwLock<Option<Arc<dyn AudioTranscoder>>> = RwLock::new(None);
+
+#[uniffi::export]
+pub fn set_audio_transcoder(transcoder: Arc<dyn AudioTranscoder>) {
+    *TRANSCODER.write().unwrap() = Some(transcoder);
+}
+
+pub(crate) fn transcoder() -> Option<Arc<dyn AudioTranscoder>> {
+    TRANSCODER.read().unwrap().clone()
+}
+
 /// Servidor HLS en la red local. Crear uno al iniciar la app y reutilizarlo.
 #[derive(uniffi::Object)]
 pub struct StreamServer {
@@ -149,8 +199,9 @@ impl StreamServer {
     /// Prepara el MKV y devuelve la URL HLS para AVPlayer.
     /// `audio_track`: id de `AudioTrackInfo`, o nil para elegir automáticamente.
     /// Puede tardar unos segundos si el archivo no trae índice (Cues).
-    pub fn publish(&self, path: String, audio_track: Option<u64>) -> Result<String, CoreError> {
-        self.inner.publish(Path::new(&path), audio_track)
+    /// `compat`: modo para teles AirPlay de otras marcas (sin subtítulos, audio en AAC).
+    pub fn publish(&self, path: String, audio_track: Option<u64>, compat: bool) -> Result<String, CoreError> {
+        self.inner.publish(Path::new(&path), audio_track, compat)
     }
 
     /// Olvida los archivos publicados (libera memoria del índice).

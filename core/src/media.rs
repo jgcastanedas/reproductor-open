@@ -35,7 +35,22 @@ struct AudioSel {
     track: u64,
     timescale: u32,
     samples_per_frame: u32,
+    /// Modo compatible: el AC-3/E-AC-3 original se convierte a AAC estéreo.
+    transcode: Option<Transcode>,
 }
+
+struct Transcode {
+    codec: &'static str,
+    channels: u32,
+    /// Muestras por frame del audio original (1536 en AC-3).
+    src_spf: u32,
+}
+
+/// Frames de audio original que se decodifican antes/después del segmento, para que
+/// el decodificador y el codificador AAC ya estén "calientes" en los bordes.
+const TRANSCODE_PREROLL_FRAMES: i64 = 8;
+const TRANSCODE_POSTROLL_FRAMES: i64 = 4;
+const AAC_FRAME: i64 = 1024;
 
 #[derive(Clone, Debug)]
 pub struct Segment {
@@ -81,7 +96,9 @@ pub fn subtitle_supported(t: &Track) -> bool {
 }
 
 impl Media {
-    pub fn open(path: &Path, audio_track: Option<u64>) -> Result<Self, CoreError> {
+    /// `compat`: modo para teles AirPlay de otras marcas (Roku, Samsung, LG…): sin
+    /// master playlist ni subtítulos, y el audio Dolby Digital convertido a AAC estéreo.
+    pub fn open(path: &Path, audio_track: Option<u64>, compat: bool) -> Result<Self, CoreError> {
         let (header, mut r) = mkv::read_header(path)?;
 
         let video = header
@@ -153,8 +170,29 @@ impl Media {
                 let kind = audio::kind_of(&t.codec_id).unwrap_or(AudioKind::Aac);
                 let frame = first_audio.unwrap_or_default();
                 match audio::audio_params(t, kind, &frame) {
+                    Some((params, spf)) if compat && kind != AudioKind::Aac => {
+                        if crate::transcoder().is_none() {
+                            return Err(CoreError::Unsupported {
+                                detail: "el modo compatible necesita un conversor de audio y no hay ninguno instalado".into(),
+                            });
+                        }
+                        let rate = params.sample_rate;
+                        Some((
+                            AudioSel {
+                                track: t.number,
+                                timescale: rate,
+                                samples_per_frame: AAC_FRAME as u32,
+                                transcode: Some(Transcode {
+                                    codec: if kind == AudioKind::Ac3 { "ac-3" } else { "ec-3" },
+                                    channels: t.channels.max(1),
+                                    src_spf: spf,
+                                }),
+                            },
+                            fmp4::AudioParams { codec: AudioCodec::Aac(audio::aac_lc_asc(rate, 2)), sample_rate: rate, channels: 2 },
+                        ))
+                    }
                     Some((params, spf)) => Some((
-                        AudioSel { track: t.number, timescale: params.sample_rate, samples_per_frame: spf },
+                        AudioSel { track: t.number, timescale: params.sample_rate, samples_per_frame: spf, transcode: None },
                         params,
                     )),
                     None => {
@@ -211,7 +249,7 @@ impl Media {
         let subtitles = header
             .tracks
             .iter()
-            .filter(|t| t.kind == mkv::TRACK_SUBTITLE && subtitle_supported(t))
+            .filter(|t| !compat && t.kind == mkv::TRACK_SUBTITLE && subtitle_supported(t))
             .map(|t| {
                 let language = t
                     .language
@@ -388,6 +426,53 @@ impl Media {
         Ok(out)
     }
 
+    /// Convierte el audio original del segmento a AAC con el conversor de la plataforma.
+    ///
+    /// Los frames AAC se alinean a una rejilla global de 1024 muestras (frame k = muestras
+    /// [k·1024, (k+1)·1024) de la línea de tiempo), así que los segmentos, generados por
+    /// separado, encajan sin huecos ni solapes: cada uno se queda con los k de su rango.
+    fn transcode_segment(
+        &self,
+        a: &AudioSel,
+        seg: &Segment,
+        frames: &[(i64, Vec<u8>)],
+    ) -> Result<(u64, Vec<Vec<u8>>), CoreError> {
+        let t = a.transcode.as_ref().expect("modo compatible");
+        let transcoder = crate::transcoder()
+            .ok_or_else(|| CoreError::Unsupported { detail: "no hay conversor de audio".into() })?;
+        let rate = a.timescale;
+        let first_sample = self.to_audio(frames[0].0 + self.reorder, rate) as i64;
+        let out = transcoder
+            .to_aac(t.codec.to_string(), rate, t.channels, first_sample, frames.iter().map(|f| f.1.clone()).collect())
+            .map_err(|e| CoreError::Unsupported { detail: format!("no se pudo convertir el audio: {e}") })?;
+
+        let start = self.to_audio(seg.start + self.reorder, rate) as i64;
+        let k0 = (start + AAC_FRAME - 1).div_euclid(AAC_FRAME);
+        let available_end = out.first_frame_index + out.packets.len() as i64;
+        let k1 = if seg.is_last {
+            available_end
+        } else {
+            let end = self.to_audio(seg.end + self.reorder, rate) as i64;
+            (end + AAC_FRAME - 1).div_euclid(AAC_FRAME)
+        };
+        let from = (k0 - out.first_frame_index).max(0);
+        let to = (k1 - out.first_frame_index).min(out.packets.len() as i64);
+        if from >= to {
+            return Ok(((k0.max(0) * AAC_FRAME) as u64, vec![]));
+        }
+        if from + out.first_frame_index != k0 || to + out.first_frame_index != k1 {
+            crate::emit(format!(
+                "audio AAC incompleto en el segmento: frames {}..{} de {}..{}",
+                from + out.first_frame_index,
+                to + out.first_frame_index,
+                k0,
+                k1
+            ));
+        }
+        let base = ((from + out.first_frame_index) * AAC_FRAME) as u64;
+        Ok((base, out.packets[from as usize..to as usize].to_vec()))
+    }
+
     /// Cluster desde el que leer un segmento (el del keyframe anterior, para no perder
     /// audio o subtítulos que empiezan un poco antes del keyframe).
     fn read_start(&self, seg: &Segment) -> u64 {
@@ -426,8 +511,15 @@ impl Media {
         let mut v_pts: Vec<i64> = vec![];
         let mut v_key: Vec<bool> = vec![];
         let mut v_data: Vec<Vec<u8>> = vec![];
-        let mut a_first_ts: Option<i64> = None;
-        let mut a_data: Vec<Vec<u8>> = vec![];
+        let mut a_frames: Vec<(i64, Vec<u8>)> = vec![];
+        // En modo compatible se leen unos frames de más a cada lado (ver TRANSCODE_PREROLL_FRAMES).
+        let (a_from, a_to) = match self.audio.as_ref().and_then(|a| a.transcode.as_ref().map(|t| (a, t))) {
+            Some((a, t)) => {
+                let frame = (t.src_spf as f64 * 1e9 / a.timescale as f64 / self.header.timestamp_scale as f64).round() as i64;
+                (seg.start - TRANSCODE_PREROLL_FRAMES * frame, seg.end + TRANSCODE_POSTROLL_FRAMES * frame)
+            }
+            None => (seg.start, seg.end),
+        };
         let default_frame = self.video_frame_ticks.unwrap_or(0);
 
         mkv::walk_clusters(
@@ -465,16 +557,12 @@ impl Media {
                     }
                     Event::Block(b) if Some(b.track) == audio_num => {
                         let a = self.audio.as_ref().unwrap();
-                        let frame_ticks = a.samples_per_frame as f64 * 1e9
-                            / a.timescale as f64
-                            / self.header.timestamp_scale as f64;
+                        let spf = a.transcode.as_ref().map(|t| t.src_spf).unwrap_or(a.samples_per_frame);
+                        let frame_ticks = spf as f64 * 1e9 / a.timescale as f64 / self.header.timestamp_scale as f64;
                         for (i, f) in b.frames.iter().enumerate() {
                             let ts = b.ts + (i as f64 * frame_ticks).round() as i64;
-                            if ts >= seg.start && ts < seg.end {
-                                if a_first_ts.is_none() {
-                                    a_first_ts = Some(ts);
-                                }
-                                a_data.push(f.clone());
+                            if ts >= a_from && ts < a_to {
+                                a_frames.push((ts, f.clone()));
                             }
                         }
                     }
@@ -522,9 +610,20 @@ impl Media {
         }
 
         // --- Audio: muestras consecutivas de duración fija.
-        if let (Some(a), Some(first)) = (&self.audio, a_first_ts) {
-            let mut data = Vec::with_capacity(a_data.iter().map(|d| d.len()).sum());
-            let samples = a_data
+        a_frames.sort_by_key(|f| f.0);
+        let audio_packets: Option<(u64, Vec<Vec<u8>>)> = match &self.audio {
+            Some(a) if a.transcode.is_some() && !a_frames.is_empty() => Some(self.transcode_segment(a, &seg, &a_frames)?),
+            Some(a) => {
+                let kept: Vec<&(i64, Vec<u8>)> = a_frames.iter().filter(|f| f.0 >= seg.start && f.0 < seg.end).collect();
+                kept.first().map(|first| {
+                    (self.to_audio(first.0 + self.reorder, a.timescale), kept.iter().map(|f| f.1.clone()).collect())
+                })
+            }
+            None => None,
+        };
+        if let (Some(a), Some((base, packets))) = (&self.audio, audio_packets) {
+            let mut data = Vec::with_capacity(packets.iter().map(|d| d.len()).sum());
+            let samples = packets
                 .iter()
                 .map(|d| {
                     data.extend_from_slice(d);
@@ -533,7 +632,7 @@ impl Media {
                 .collect();
             tracks.push(TrackFragment {
                 track_id: fmp4::AUDIO_TRACK_ID,
-                base_decode_time: self.to_audio(first + self.reorder, a.timescale),
+                base_decode_time: base,
                 samples,
                 data,
                 is_video: false,

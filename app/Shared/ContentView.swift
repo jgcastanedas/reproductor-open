@@ -62,6 +62,21 @@ struct PlayerDetail: View {
                 Theme.background
                 welcome
             }
+            if let notice = model.notice {
+                VStack {
+                    Label(notice, systemImage: "tv.badge.wifi")
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(Theme.text)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .background(Theme.deep.opacity(0.95), in: Capsule())
+                        .overlay(Capsule().stroke(Theme.accent.opacity(0.7), lineWidth: 1))
+                        .padding(.top, 14)
+                    Spacer()
+                }
+                .transition(.move(edge: .top).combined(with: .opacity))
+                .allowsHitTesting(false)
+            }
             if model.isLoading {
                 ProgressView("Preparando video…")
                     .tint(Theme.accent)
@@ -71,6 +86,7 @@ struct PlayerDetail: View {
                     .overlay(RoundedRectangle(cornerRadius: 18).stroke(Theme.slate, lineWidth: 1))
             }
         }
+        .animation(.easeInOut(duration: 0.25), value: model.notice)
         .navigationTitle(model.title)
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
@@ -174,6 +190,16 @@ struct PlayerDetail: View {
                 }
                 .help("Subtítulos")
             }
+            Menu {
+                Toggle("Modo compatible para teles Roku, Samsung, LG…", isOn: Binding(
+                    get: { model.compatMode },
+                    set: { model.setCompatMode($0) }
+                ))
+                Text("Convierte el audio Dolby Digital a AAC estéreo y quita los subtítulos, que es lo que esas teles aceptan por AirPlay. Con Apple TV o en esta pantalla no hace falta.")
+            } label: {
+                Label("Tele", systemImage: model.compatMode ? "tv.badge.wifi" : "tv")
+            }
+            .help(model.compatMode ? "Modo compatible activado" : "Opciones para la tele")
             #if os(iOS)
             RoutePicker()
                 .frame(width: 32, height: 32)
