@@ -1,8 +1,25 @@
-# Reproductor Open
+<p align="center">
+  <img src="docs/logo.svg" width="140" alt="Logo de Reproductor Open">
+</p>
 
-**Reproductor de video gratuito para iPhone, iPad y Mac que envía archivos MP4 y MKV a tu Apple TV por AirPlay, sin recodificar y sin perder calidad.**
+<h1 align="center">Reproductor Open</h1>
+
+<p align="center">
+  <b>Reproductor de video gratuito para iPhone, iPad y Mac que envía archivos MP4 y MKV a tu Apple TV por AirPlay, sin recodificar y sin perder calidad.</b>
+</p>
+
+<p align="center">
+  <img alt="Plataformas" src="https://img.shields.io/badge/iOS%2017%2B%20%C2%B7%20macOS%2014%2B-0C7075?style=flat-square">
+  <img alt="Núcleo en Rust" src="https://img.shields.io/badge/n%C3%BAcleo-Rust-0F969C?style=flat-square">
+  <img alt="SwiftUI" src="https://img.shields.io/badge/UI-SwiftUI-294D61?style=flat-square">
+  <img alt="Licencia MIT" src="https://img.shields.io/badge/licencia-MIT-6DA5C0?style=flat-square">
+</p>
 
 Sin anuncios, sin suscripciones, sin cuentas y sin servidores externos: todo ocurre entre tu dispositivo y tu Apple TV, dentro de tu red local.
+
+<p align="center">
+  <img src="docs/screenshot-ios.png" width="300" alt="Pantalla de inicio de Reproductor Open en iPhone">
+</p>
 
 ---
 
@@ -128,9 +145,12 @@ Si el MKV tiene varias pistas de audio (por ejemplo, doblaje y versión original
 
 `scripts/build-xcframework.sh`:
 
-1. Compila el núcleo como librería estática para `aarch64-apple-ios`, `aarch64-apple-ios-sim` y `aarch64-apple-darwin`.
+1. Compila el núcleo como librería estática para `aarch64-apple-ios`, `aarch64-apple-ios-sim`, `aarch64-apple-darwin` y `x86_64-apple-darwin`.
 2. Genera con UniFFI `ReproductorCore.swift`, la cabecera C y el `module.modulemap`.
-3. Empaqueta todo en `ReproductorCore.xcframework`, que enlazan los dos targets de Xcode.
+3. Une las versiones de macOS para Apple Silicon e Intel en una librería universal con `lipo`.
+4. Empaqueta todo en `ReproductorCore.xcframework`, que enlazan los dos targets de Xcode.
+
+La herramienta de generación de bindings (y sus dependencias `clap`, `askama`, `goblin`…) está aislada en la *feature* `cli`, así que la librería que va dentro de la app solo depende de `uniffi`, `tiny_http`, `if-addrs` y `thiserror`.
 
 ---
 
@@ -149,6 +169,28 @@ Prueba con una película MKV real: 1080p H.264, 1 h 45 min, dos pistas de audio 
 
 ---
 
+## Identidad visual
+
+El logo une un **botón de reproducción** con **ondas de transmisión**: el video sale del dispositivo hacia la tele. Todo el diseño usa una paleta de tonos petróleo y turquesa, oscura para que no moleste al ver películas con la luz apagada.
+
+<p align="center">
+  <img src="docs/palette.svg" width="760" alt="Paleta de colores">
+</p>
+
+| Color | Hex | Uso en la app |
+|---|---|---|
+| Abismo | `#05161A` | Fondo principal |
+| Profundo | `#072E33` | Fondo secundario, paneles |
+| Petróleo | `#0C7075` | Superficies activas, resplandor |
+| Turquesa | `#0F969C` | Color de acento: botones, AirPlay activo, progreso |
+| Cielo | `#6DA5C0` | Texto secundario, íconos |
+| Pizarra | `#294D61` | Bordes, tarjetas, separadores |
+
+- Los colores están definidos en [`app/Shared/Theme.swift`](app/Shared/Theme.swift).
+- El logo es un SVG editable ([`docs/logo.svg`](docs/logo.svg)). Los íconos de la app se generan a partir de él con [`scripts/render-icon.swift`](scripts/render-icon.swift): una versión cuadrada a sangre para iOS y otra con márgenes para macOS, según la guía de Apple.
+
+---
+
 ## Compatibilidad
 
 Funciona **sin recodificar** con:
@@ -161,13 +203,13 @@ Funciona **sin recodificar** con:
 
 Las pistas de audio no compatibles aparecen deshabilitadas en el menú. Si un MKV no tiene ninguna compatible, se reproduce solo el video.
 
-**Dispositivos:** iPhone y iPad con iOS 17 o superior, y Mac con Apple Silicon y macOS 14 o superior. Funciona con cualquier Apple TV o tele compatible con AirPlay en la misma red Wi-Fi.
+**Dispositivos:** iPhone y iPad con iOS 17 o superior, y Mac (Apple Silicon o Intel) con macOS 14 o superior. Funciona con cualquier Apple TV o tele compatible con AirPlay en la misma red Wi-Fi.
 
 ---
 
 ## Compilar y ejecutar
 
-Requisitos: Xcode 16 o superior, [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`) y Rust con [rustup](https://rustup.rs).
+Requisitos: un Mac, Xcode 16 o superior, [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`) y Rust con [rustup](https://rustup.rs).
 
 ```bash
 git clone https://github.com/jgcastanedas/reproductor-open.git
@@ -206,10 +248,12 @@ reproductor-open/
 │   ├── src/lib.rs             API para Swift (UniFFI)
 │   └── src/bin/cli.rs         Herramienta de prueba en la terminal
 ├── app/
-│   ├── Shared/                SwiftUI compartido iOS + macOS
+│   ├── Shared/                SwiftUI compartido iOS + macOS (tema, íconos, vistas)
 │   └── project.yml            Definición del proyecto Xcode (XcodeGen)
+├── docs/                      Logo, paleta y capturas
 └── scripts/
-    └── build-xcframework.sh   Compila Rust y genera el XCFramework
+    ├── build-xcframework.sh   Compila Rust y genera el XCFramework
+    └── render-icon.swift      Genera los PNG de los íconos desde el SVG
 ```
 
 ---
@@ -219,7 +263,7 @@ reproductor-open/
 - [ ] Subtítulos: convertir las pistas SRT/ASS del MKV a WebVTT dentro del HLS.
 - [ ] Recodificar al vuelo el audio DTS y TrueHD a AAC o AC-3.
 - [ ] E-AC-3 7.1 con substreams dependientes (hoy se anuncia como 5.1).
-- [ ] Soporte para Mac con procesador Intel (x86_64).
+- [x] Soporte para Mac con procesador Intel (librería universal arm64 + x86_64).
 - [ ] Biblioteca con miniaturas y «seguir viendo».
 
 ¿Ideas o errores? Abre un *issue*. Las contribuciones son bienvenidas.

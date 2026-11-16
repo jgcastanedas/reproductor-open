@@ -12,16 +12,22 @@ crate-type = ["lib", "staticlib", "cdylib"]
 [[bin]]
 name = "uniffi-bindgen"
 path = "src/bin/uniffi-bindgen.rs"
+# Solo hace falta en el Mac para generar los bindings Swift.
+required-features = ["cli"]
 
 [[bin]]
 name = "reproductor-cli"
 path = "src/bin/cli.rs"
 
 [dependencies]
-uniffi = { version = "0.32", features = ["cli"] }
+uniffi = "0.32"
 thiserror = "2"
 tiny_http = "0.12"
 if-addrs = "0.13"
+
+[features]
+# Herramienta de generación de bindings (clap, askama, goblin…): fuera de la librería de la app.
+cli = ["uniffi/cli"]
 
 [profile.release]
 opt-level = 3

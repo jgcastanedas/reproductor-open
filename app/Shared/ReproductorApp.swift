@@ -18,6 +18,7 @@ struct ReproductorApp: App {
                 .environmentObject(model)
                 .onOpenURL { model.open($0) }
                 .preferredColorScheme(.dark)
+                .tint(Theme.accent)
         }
         #if os(macOS)
         .commands {

@@ -13,7 +13,11 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
+            if model.player == nil {
+                Theme.background
+            } else {
+                Color.black.ignoresSafeArea()
+            }
             if let player = model.player {
                 VideoPlayer(player: player)
                     .ignoresSafeArea(edges: .bottom)
@@ -25,15 +29,18 @@ struct ContentView: View {
             }
             if model.isLoading {
                 ProgressView("Preparando video…")
+                    .tint(Theme.accent)
+                    .foregroundStyle(Theme.text)
                     .padding(24)
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+                    .background(Theme.deep.opacity(0.92), in: RoundedRectangle(cornerRadius: 18))
+                    .overlay(RoundedRectangle(cornerRadius: 18).stroke(Theme.slate, lineWidth: 1))
             }
         }
         .toolbar { toolbar }
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
-        .navigationTitle(model.title.isEmpty ? "Reproductor" : model.title)
+        .navigationTitle(model.title)
         .fileImporter(isPresented: $model.showImporter, allowedContentTypes: Self.videoTypes) { result in
             if case .success(let url) = result { model.open(url) }
         }
@@ -55,36 +62,52 @@ struct ContentView: View {
 
     private var welcome: some View {
         VStack(spacing: 20) {
-            Image(systemName: "airplayvideo")
-                .font(.system(size: 64, weight: .light))
-                .foregroundStyle(.secondary)
+            Image("Logo")
+                .resizable()
+                .interpolation(.high)
+                .frame(width: 112, height: 112)
+                .shadow(color: Theme.accent.opacity(0.45), radius: 28, y: 8)
+            Text("Reproductor Open")
+                .font(.largeTitle.weight(.bold))
+                .foregroundStyle(Theme.text)
             Text("Reproduce MP4 y MKV en tu Apple TV")
-                .font(.title2.weight(.semibold))
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(Theme.sky)
                 .multilineTextAlignment(.center)
             Text("Abre un video y toca el botón AirPlay. Los MKV se convierten al vuelo, sin perder calidad.")
                 .font(.callout)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Theme.sky.opacity(0.8))
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 380)
             Button {
                 model.showImporter = true
             } label: {
-                Label("Abrir video", systemImage: "folder")
-                    .padding(.horizontal, 8)
+                Label("Abrir video", systemImage: "folder.fill")
+                    .font(.headline)
+                    .padding(.horizontal, 22)
+                    .padding(.vertical, 12)
+                    .foregroundStyle(Theme.abyss)
+                    .background(
+                        LinearGradient(colors: [Theme.sky, Theme.accent], startPoint: .topLeading, endPoint: .bottomTrailing),
+                        in: Capsule()
+                    )
+                    .shadow(color: Theme.accent.opacity(0.5), radius: 16, y: 6)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
+            .buttonStyle(.plain)
+            .padding(.top, 8)
         }
         .padding(32)
-        .foregroundStyle(.white)
     }
 
     private var externalBanner: some View {
         VStack(spacing: 12) {
             Image(systemName: "appletv.fill").font(.system(size: 48))
+                .foregroundStyle(Theme.accent)
             Text("Reproduciendo en el Apple TV").font(.headline)
+                .foregroundStyle(Theme.text)
         }
-        .foregroundStyle(.white.opacity(0.85))
+        .padding(28)
+        .background(Theme.deep.opacity(0.9), in: RoundedRectangle(cornerRadius: 22))
         .allowsHitTesting(false)
     }
 
@@ -139,7 +162,8 @@ struct RoutePicker: UIViewRepresentable {
     func makeUIView(context: Context) -> AVRoutePickerView {
         let view = AVRoutePickerView()
         view.prioritizesVideoDevices = true
-        view.tintColor = .white
+        view.tintColor = UIColor(Theme.sky)
+        view.activeTintColor = UIColor(Theme.accent)
         return view
     }
 
@@ -153,6 +177,8 @@ struct RoutePicker: NSViewRepresentable {
         let view = AVRoutePickerView()
         view.isRoutePickerButtonBordered = false
         view.player = player
+        view.setRoutePickerButtonColor(NSColor(Theme.sky), for: .normal)
+        view.setRoutePickerButtonColor(NSColor(Theme.accent), for: .active)
         return view
     }
 

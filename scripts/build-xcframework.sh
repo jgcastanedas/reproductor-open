@@ -17,9 +17,9 @@ fi
 export IPHONEOS_DEPLOYMENT_TARGET=17.0
 export MACOSX_DEPLOYMENT_TARGET=14.0
 
-TARGETS=(aarch64-apple-ios aarch64-apple-ios-sim aarch64-apple-darwin)
+TARGETS=(aarch64-apple-ios aarch64-apple-ios-sim aarch64-apple-darwin x86_64-apple-darwin)
 for t in "${TARGETS[@]}"; do
-  rustup target add "$t" >/dev/null 2>&1 || true
+  rustup target list --installed | grep -qx "$t" || rustup target add "$t"
 done
 
 cd "$CORE"
@@ -31,7 +31,7 @@ done
 echo "▸ Generando bindings Swift (UniFFI)"
 rm -rf "$GEN"
 mkdir -p "$GEN/headers"
-cargo run --quiet --release --bin uniffi-bindgen -- generate \
+cargo run --quiet --release --features cli --bin uniffi-bindgen -- generate \
   --library "target/aarch64-apple-darwin/release/$LIB.dylib" \
   --language swift --out-dir "$GEN/tmp"
 mv "$GEN/tmp/"*.swift "$GEN/ReproductorCore.swift"
@@ -41,9 +41,15 @@ rm -rf "$GEN/tmp"
 
 echo "▸ Creando XCFramework"
 rm -rf "$APP/ReproductorCore.xcframework"
+# macOS: una sola librería universal (Apple Silicon + Intel).
+mkdir -p target/universal-macos/release
+lipo -create \
+  "target/aarch64-apple-darwin/release/$LIB.a" \
+  "target/x86_64-apple-darwin/release/$LIB.a" \
+  -output "target/universal-macos/release/$LIB.a"
 args=()
-for t in "${TARGETS[@]}"; do
-  args+=(-library "target/$t/release/$LIB.a" -headers "$GEN/headers")
+for dir in aarch64-apple-ios aarch64-apple-ios-sim universal-macos; do
+  args+=(-library "target/$dir/release/$LIB.a" -headers "$GEN/headers")
 done
 xcodebuild -create-xcframework "${args[@]}" -output "$APP/ReproductorCore.xcframework" >/dev/null
 
